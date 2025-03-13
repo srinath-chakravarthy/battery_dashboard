@@ -5,5 +5,6 @@ if __name__ == "__main__":
     subprocess.run([
         "panel", "serve", "app.py",
         "--port", "8060",
-        "--show"
+        "--show",
+        "--autoreload"
     ], check=True)
