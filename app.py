@@ -108,9 +108,32 @@ def get_cycle_data(cell_ids=None, cell_metadata=None):
     all_results = []
     for cell_id in cell_ids:
         params = {"cell_ids": str(cell_id)}
-        df = get_redash_query_results(CYCLE_QUERY_ID, params)
-        if not df.is_empty():
-            all_results.append(df)
+        cell_data = get_redash_query_results(CYCLE_QUERY_ID, params)
+        if not cell_data.is_empty():
+            # List of columns that should be normalized (containing capacity or energy)
+            normalize_columns = [col for col in cell_data.columns if
+                                 any(term in col.lower() for term in ['_capacity', '_energy'])]
+
+            # Create expressions for normalization
+            norm_expressions = []
+            for col in normalize_columns:
+                # 1. Regular cycle normalization (using cycle 1 as reference)
+                first_cycle_val = cell_data.filter(pl.col('regular_cycle_number') == 1)[col].item()
+                norm_expressions.append(
+                    (pl.col(col) / first_cycle_val).alias(f'{col}_norm_reg')
+                )
+
+                # 2. 95th percentile normalization
+                p95_val = cell_data[col].quantile(0.95)
+                norm_expressions.append(
+                    (pl.col(col) / p95_val).alias(f'{col}_norm_p95')
+                )
+
+            # Apply normalizations for this cell
+            if norm_expressions:
+                cell_data = cell_data.with_columns(norm_expressions)
+
+            all_results.append(cell_data)
 
     cycle_data = pl.concat(all_results) if all_results else pl.DataFrame()
     return cycle_data
@@ -176,7 +199,16 @@ class CellSelectorTab(param.Parameterized):
             theme="bootstrap4",
             layout="fit_data_table",
             show_index=False,
-            theme_classes=["table-bordered"],
+            frozen_rows = [-2, -1],
+            height=600,
+            theme_classes=["table-bordered", "thead-dark"],
+        )
+
+        # Add a load button
+        self.load_button = pn.widgets.Button(
+            name="Load Cycle Data",
+            button_type="primary",
+            width=200
         )
 
         # Initialize handlers and table
@@ -188,6 +220,9 @@ class CellSelectorTab(param.Parameterized):
             widget.param.watch(self.update_table_data, "value")
         self.data_table.param.watch(self.on_cell_selection, "selection")
         self.column_selector.param.watch(self.update_table_data, "value")
+
+        # Add button click handler
+        self.load_button.on_click(self.trigger_selection_update)
 
     def update_table_data(self, *events):
         # Apply row filters to get filtered rows (all columns)
@@ -233,11 +268,14 @@ class CellSelectorTab(param.Parameterized):
         print(f"Updated selected_cell_ids: {self.selected_cell_ids}")
         print(f"Selected data shape: {self.selected_data.shape if self.selected_data is not None else 'None'}")
 
-        # Explicitly print before triggering
-        print("About to trigger parameter updates")
-        self.param.trigger('selected_cell_ids')
-        self.param.trigger('selected_data')
-        print("Parameter updates triggered")
+    def trigger_selection_update(self, event):
+        """Explicit method to trigger parameter updates when button is clicked"""
+        if self.selected_cell_ids:
+            print(f"Loading data for {len(self.selected_cell_ids)} selected cells...")
+            self.param.trigger('selected_cell_ids')
+            self.param.trigger('selected_data')
+        else:
+            print("No cells selected")
 
     def create_layout(self):
         sidebar = pn.Column(
@@ -249,7 +287,28 @@ class CellSelectorTab(param.Parameterized):
             width=300,
             sizing_mode="fixed",
         )
-        return pn.Row(sidebar, self.data_table)
+        # Create a row with the button and selection indicator for below the table
+        action_row = pn.Row(
+            self.load_button,
+            self.selection_indicator,
+            align="center"
+        )
+
+        # Stack the table and action row in a column with scrollbars
+        main_content = pn.Column(
+            pn.pane.Markdown("### Cell Data", styles={"margin-bottom": "10px"}),
+            pn.Column(
+                self.data_table,
+                max_height=650,  # Set maximum height
+                scroll=True,  # Enable scrolling
+                width_policy='max',
+                styles={'overflow-y': 'auto', 'overflow-x': 'auto'}
+            ),
+            action_row,
+            sizing_mode="stretch_width"
+        )
+
+        return pn.Row(sidebar, main_content)
 
 
 # Modular class for Cycle Plots Tab
