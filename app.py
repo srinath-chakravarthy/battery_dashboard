@@ -61,8 +61,8 @@ def load_initial_data():
     return df
 
 
-def get_cycle_data(cell_ids=None):
-    """Get cycle data for specific cell IDs from the materialized view using Polars."""
+def get_cycle_data(cell_ids=None, cell_metadata=None):
+    """Get cycle data and join with cell metadata."""
     if not cell_ids:
         return pl.DataFrame()
 
@@ -73,7 +73,26 @@ def get_cycle_data(cell_ids=None):
         if not df.is_empty():
             all_results.append(df)
 
-    return pl.concat(all_results) if all_results else pl.DataFrame()
+    cycle_data = pl.concat(all_results) if all_results else pl.DataFrame()
+
+    # Join with cell metadata if provided
+    if cell_metadata is not None and not cycle_data.is_empty():
+        # Convert cell_metadata to Polars if it's not already
+        if not isinstance(cell_metadata, pl.DataFrame):
+            cell_metadata = pl.from_pandas(cell_metadata)
+
+        # Get only columns from metadata that aren't in cycle_data
+        meta_cols = [col for col in cell_metadata.columns if col != "cell_id" and col not in cycle_data.columns]
+
+        # Join the data
+        if meta_cols:
+            cycle_data = cycle_data.join(
+                cell_metadata.select(["cell_id"] + meta_cols),
+                on="cell_id",
+                how="left"
+            )
+
+    return cycle_data
 
 
 def create_filter_widgets(df):
@@ -100,7 +119,7 @@ def apply_filters(data, filters):
 # Modular class for Cell Selector Tab
 class CellSelectorTab(param.Parameterized):
     selected_cell_ids = param.List(default=[], doc="Selected cell IDs")
-    selected_data = param.DataFrame(default=None, doc="Full data for selected rows")
+    selected_data = param.Parameter(default=None, doc="Full data for selected rows")
 
     def __init__(self, cell_data, **params):
         super().__init__(**params)
@@ -171,19 +190,27 @@ class CellSelectorTab(param.Parameterized):
             self.selected_cell_ids = []
             self.selected_data = None
             self.selection_indicator.object = "**0** cells selected"
-            return
 
-        # Store the complete selected rows data (all columns)
-        self.selected_data = self.filtered_cell_data.take(selected_indices)
+        # Get the selected cell_ids from the displayed table
+        selected_rows = self.data_table.value.iloc[selected_indices]
+        selected_cell_ids = selected_rows['cell_id'].tolist()
+        self.selected_cell_ids = selected_cell_ids
 
-        # Get the cell IDs from the selected rows
-        self.selected_cell_ids = self.selected_data["cell_id"].to_list()
+        # Then filter the full dataset based on these cell_ids
+        self.selected_data = self.filtered_cell_data.filter(
+            pl.col("cell_id").is_in(selected_cell_ids)
+        )
 
         self.selection_indicator.object = f"**{len(self.selected_cell_ids)}** cells selected"
 
-        # Trigger parameter updates to notify listeners
+        print(f"Updated selected_cell_ids: {self.selected_cell_ids}")
+        print(f"Selected data shape: {self.selected_data.shape if self.selected_data is not None else 'None'}")
+
+        # Explicitly print before triggering
+        print("About to trigger parameter updates")
         self.param.trigger('selected_cell_ids')
         self.param.trigger('selected_data')
+        print("Parameter updates triggered")
 
     def create_layout(self):
         sidebar = pn.Column(
@@ -203,7 +230,7 @@ class CyclePlotsTab(param.Parameterized):
     def __init__(self, **params):
         super().__init__(**params)
         self.selected_cell_ids = []
-        self.selected_data = None
+        self.selected_cell_metadata = None
 
         self.color_theme = pn.widgets.Select(
             name="Color Theme",
@@ -212,106 +239,133 @@ class CyclePlotsTab(param.Parameterized):
             value="plotly"
         )
 
-        self.plot_type = pn.widgets.Select(
-            name="Plot Type",
-            options=["Discharge Capacity", "Charge Capacity", "Coulombic Efficiency", "Energy Efficiency"],
-            value="Discharge Capacity"
+        self.x_axis = pn.widgets.Select(
+            name="X-Axis",
+            options=["regular_cycle_number"],
+            value="regular_cycle_number"
+        )
+
+        self.y_axis = pn.widgets.Select(
+            name="Y-Axis",
+            options=["discharge_capacity", "charge_capacity",
+                     "coulombic_efficiency", "energy_efficiency"],
+            value="discharge_capacity"
         )
 
         self.cycle_plot_container = pn.Column("No cells selected. Please select cells in the Cell Selector tab.")
 
         # Set up event handlers
         self.color_theme.param.watch(self.update_plots, "value")
-        self.plot_type.param.watch(self.update_plots, "value")
+        self.x_axis.param.watch(self.update_plots, "value")
+        self.y_axis.param.watch(self.update_plots, "value")
 
     def update_selection(self, cell_ids, cell_data):
         """Update the selected cell IDs and data."""
         self.selected_cell_ids = cell_ids
-        self.selected_data = cell_data
+        self.selected_cell_metadata = cell_data
+        if not cell_ids:
+            self.cycle_plot_container.append("No cells selected. Please select cells in the Cell Selector tab.")
+            return
+
+        self.cycle_plot_container.append(pn.pane.Markdown("Loading cycle data..."))
+        self.cycle_data = get_cycle_data(cell_ids)
+
+        if self.cycle_data.is_empty():
+            self.cycle_plot_container.clear()
+            self.cycle_plot_container.append("No cycle data available for the selected cells.")
+            return
+
+        # Update axis options based on available columns
+        numeric_cols = [col for col in self.cycle_data.columns
+                        if self.cycle_data[col].dtype in [pl.Float32, pl.Float64, pl.Int32, pl.Int64]]
+
+        # Keep current selection if possible
+        current_x = self.x_axis.value if self.x_axis.value in numeric_cols else "regular_cycle_number"
+        current_y = self.y_axis.value if self.y_axis.value in numeric_cols else "discharge_capacity"
+
+        self.x_axis.options = numeric_cols
+        self.x_axis.value = current_x
+
+        self.y_axis.options = numeric_cols
+        self.y_axis.value = current_y
+
+        # Now update the plots with the loaded data
         self.update_plots()
 
     def update_plots(self, event=None):
         """Update plots based on the current selection and plot settings."""
         self.cycle_plot_container.clear()
 
-        if not self.selected_cell_ids:
-            self.cycle_plot_container.append(
-                "No cells selected. Please select cells in the Cell Selector tab."
-            )
+        if not hasattr(self, 'cycle_data') or self.cycle_data.is_empty():
+            self.cycle_plot_container.append("No cycle data available. Please select cells first.")
             return
 
-        self.cycle_plot_container.append(pn.pane.Markdown("Loading cycle data..."))
-        cycle_data = get_cycle_data(self.selected_cell_ids)
-
-        if cycle_data.is_empty():
-            self.cycle_plot_container.clear()
-            self.cycle_plot_container.append(
-                "No cycle data available for the selected cells."
-            )
-            return
-
-        # Determine y-axis variable based on selected plot type
-        plot_type_mapping = {
-            "Discharge Capacity": "discharge_capacity",
-            "Charge Capacity": "charge_capacity",
-            "Coulombic Efficiency": "coulombic_efficiency",
-            "Energy Efficiency": "energy_efficiency"
-        }
-
-        y_var = plot_type_mapping.get(self.plot_type.value, "discharge_capacity")
-        y_label = self.plot_type.value
-
-        # Create plotly figure
+        # Create plotly figure using the already loaded cycle data
         fig = px.line(
-            cycle_data.to_pandas(),
-            x="regular_cycle_number",
-            y=y_var,
+            self.cycle_data.to_pandas(),
+            x=self.x_axis.value,
+            y=self.y_axis.value,
             color="cell_id",
-            title=f"{self.plot_type.value} vs Cycle Number",
+            title=f"{self.y_axis.value} vs {self.x_axis.value}",
             template=self.color_theme.value,
             hover_data=["cycle_number"]
         )
 
-        # Add custom data to hover info if available
-        if self.selected_data is not None and not self.selected_data.is_empty():
-            if "experiment_group" in self.selected_data.columns:
+        # Add custom hover info if cell metadata is available
+        if hasattr(self, 'cell_metadata') and self.selected_cell_metadata is not None and not self.selected_cell_metadata.is_empty():
+            if "experiment_group" in self.cell_metadata.columns:
                 # Create a mapping of cell_id to experiment_group
                 cell_info = {}
-                for row in self.selected_data.iter_rows(named=True):
+                for row in self.cell_metadata.iter_rows(named=True):
                     cell_id = row["cell_id"]
                     exp_group = row.get("experiment_group", "Unknown")
                     cell_info[cell_id] = exp_group
 
                 # Add custom hover text
                 for i, cell_id in enumerate(sorted(self.selected_cell_ids)):
-                    exp_group = cell_info.get(cell_id, "Unknown")
-                    fig.data[i].hovertemplate = (
-                            f"Cell ID: {cell_id}<br>" +
-                            f"Experiment: {exp_group}<br>" +
-                            f"Cycle: %{{x}}<br>" +
-                            f"{y_label}: %{{y:.2f}}"
-                    )
+                    if i < len(fig.data):  # Ensure we don't go out of bounds
+                        exp_group = cell_info.get(cell_id, "Unknown")
+                        fig.data[i].hovertemplate = (
+                                f"Cell ID: {cell_id}<br>" +
+                                f"Experiment: {exp_group}<br>" +
+                                f"{self.x_axis.value}: %{{x}}<br>" +
+                                f"{self.y_axis.value}: %{{y:.2f}}"
+                        )
 
         fig.update_layout(
             height=600,
             legend_title_text="Cell ID",
-            xaxis_title="Cycle Number",
-            yaxis_title=y_label,
+            xaxis_title=self.x_axis.value.replace('_', ' ').title(),
+            yaxis_title=self.y_axis.value.replace('_', ' ').title(),
         )
 
-        self.cycle_plot_container.clear()
         self.cycle_plot_container.append(pn.pane.Plotly(fig))
 
     def create_layout(self):
         sidebar = pn.Column(
-            pn.pane.Markdown("## Plot Settings"),
-            self.plot_type,
+            pn.pane.Markdown("## Plot Settings", styles={'background': '#f0f0f0', 'padding': '10px'}),
+            self.x_axis,
+            self.y_axis,
             self.color_theme,
+            pn.layout.Divider(),
+            pn.pane.Markdown("### Plot Options", styles={'padding': '10px'}),
+            pn.layout.Accordion(
+                ('Appearance', pn.Column(
+                    pn.widgets.Switch(name="Show Legend", value=True, width=150),
+                    pn.widgets.ColorPicker(name="Plot Line Color", value="#1f77b4"),
+                    pn.widgets.IntSlider(name="Line Width", start=1, end=5, value=2),
+                )),
+                ('Grid Lines', pn.Column(
+                    pn.widgets.Switch(name="X-Axis Grid", value=True, width=150),
+                    pn.widgets.Switch(name="Y-Axis Grid", value=True, width=150),
+                )),
+            ),
             width=300,
             sizing_mode="fixed",
+            styles={'background': '#f8f9fa', 'border-right': '1px solid #ddd', 'padding': '10px'}
         )
-        main = pn.Column(self.cycle_plot_container)
-        return pn.Row(sidebar, main)
+        main = pn.Column(self.cycle_plot_container, sizing_mode='stretch_both')
+        return pn.Row(sidebar, main, sizing_mode='stretch_both')
 
 
 # Main Dashboard
