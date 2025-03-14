@@ -15,6 +15,43 @@ load_dotenv()
 
 # Panel extensions
 pn.extension("plotly", "tabulator", sizing_mode="stretch_width")
+
+pn.extension(raw_css=["""
+    /* Make checkboxes significantly larger and more visible */
+    .tabulator .tabulator-cell input[type="checkbox"],
+    .tabulator .tabulator-header-contents input[type="checkbox"] {
+        width: 24px !important;
+        height: 24px !important;
+        transform: scale(1.5) !important;
+        cursor: pointer !important;
+        display: block !important;
+        margin: 0 auto !important;
+        opacity: 1 !important;
+        visibility: visible !important;
+    }
+
+    /* Add a clear border to separate the checkbox column from other columns */
+    .tabulator .tabulator-cell.tabulator-row-handle,
+    .tabulator .tabulator-header .tabulator-col.tabulator-row-handle {
+        border-right: 2px solid #999 !important; 
+        background-color: #f8f8f8 !important; /* Subtle background difference */
+        padding: 10px 15px !important;
+        min-width: 40px !important;
+    }
+
+    /* Style for the checkbox cell when selected */
+    .tabulator .tabulator-row.tabulator-selected .tabulator-cell.tabulator-row-handle {
+        background-color: #e0e8ff !important; /* Different background when selected */
+    }
+
+    /* Add a visible border to make checkboxes stand out */
+    .tabulator input[type="checkbox"] {
+        border: 2px solid #666 !important;
+        border-radius: 3px !important;
+        background-color: white !important;
+    }
+"""])
+
 print("Panel extensions loaded")
 
 # Redash API configuration
@@ -130,10 +167,16 @@ class CellSelectorTab(param.Parameterized):
             pagination="remote",
             page_size=50,
             selectable="checkbox",
+            styles={
+                '_selector': {'padding': '12px'},  # Adds padding to checkbox column
+                '*': {'padding': '4px'}  # Adds padding to all other cells
+            },
+
             header_align="left",
-            theme="simple",
+            theme="bootstrap4",
             layout="fit_data_table",
             show_index=False,
+            theme_classes=["table-bordered"],
         )
 
         # Initialize handlers and table
