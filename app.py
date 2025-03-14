@@ -74,24 +74,6 @@ def get_cycle_data(cell_ids=None, cell_metadata=None):
             all_results.append(df)
 
     cycle_data = pl.concat(all_results) if all_results else pl.DataFrame()
-
-    # Join with cell metadata if provided
-    if cell_metadata is not None and not cycle_data.is_empty():
-        # Convert cell_metadata to Polars if it's not already
-        if not isinstance(cell_metadata, pl.DataFrame):
-            cell_metadata = pl.from_pandas(cell_metadata)
-
-        # Get only columns from metadata that aren't in cycle_data
-        meta_cols = [col for col in cell_metadata.columns if col != "cell_id" and col not in cycle_data.columns]
-
-        # Join the data
-        if meta_cols:
-            cycle_data = cycle_data.join(
-                cell_metadata.select(["cell_id"] + meta_cols),
-                on="cell_id",
-                how="left"
-            )
-
     return cycle_data
 
 
@@ -231,6 +213,7 @@ class CyclePlotsTab(param.Parameterized):
         super().__init__(**params)
         self.selected_cell_ids = []
         self.selected_cell_metadata = None
+        self.cycle_data = None
 
         self.color_theme = pn.widgets.Select(
             name="Color Theme",
@@ -250,6 +233,13 @@ class CyclePlotsTab(param.Parameterized):
             options=["discharge_capacity", "charge_capacity",
                      "coulombic_efficiency", "energy_efficiency"],
             value="discharge_capacity"
+        )
+
+        # New grouping widget
+        self.group_by = pn.widgets.Select(
+            name="Group By",
+            options=["cell_id"],
+            value="cell_id"
         )
 
         self.cycle_plot_container = pn.Column("No cells selected. Please select cells in the Cell Selector tab.")
@@ -279,6 +269,23 @@ class CyclePlotsTab(param.Parameterized):
         numeric_cols = [col for col in self.cycle_data.columns
                         if self.cycle_data[col].dtype in [pl.Float32, pl.Float64, pl.Int32, pl.Int64]]
 
+        # Find categorical columns
+        categorical_cols = [
+            col for col in cell_data.columns
+            if col not in ['cell_id', 'cell_name'] and
+               cell_data[col].dtype in [pl.Utf8, pl.String]
+        ]
+
+        # Ensure 'cell_id' and 'cell_name' are always first
+        group_options = ["cell_id", "cell_name"] + categorical_cols
+
+        # Update group options dynamically
+        current_group = self.group_by.value
+        self.group_by.options = group_options
+
+        if current_group not in group_options:
+            self.group_by.value = "cell_id"
+
         # Keep current selection if possible
         current_x = self.x_axis.value if self.x_axis.value in numeric_cols else "regular_cycle_number"
         current_y = self.y_axis.value if self.y_axis.value in numeric_cols else "discharge_capacity"
@@ -300,37 +307,41 @@ class CyclePlotsTab(param.Parameterized):
             self.cycle_plot_container.append("No cycle data available. Please select cells first.")
             return
 
+        # Merge group information if available
+        if self.selected_cell_metadata is not None and not self.selected_cell_metadata.is_empty():
+            # Convert cycle data to pandas
+            cycle_df = self.cycle_data.to_pandas()
+
+            # Merge with cell metadata
+            cell_metadata_df = self.selected_cell_metadata.to_pandas()
+
+            # Ensure we're merging on a common column
+            merged_df = cycle_df.merge(
+                cell_metadata_df[['cell_id', self.group_by.value]],
+                on='cell_id',
+                how='left'
+            )
+        else:
+            merged_df = self.cycle_data.to_pandas()
+
         # Create plotly figure using the already loaded cycle data
         fig = px.scatter(
-            self.cycle_data.to_pandas(),
+            merged_df,
             x=self.x_axis.value,
             y=self.y_axis.value,
-            color="cell_id",
+            color=self.group_by.value,
             title=f"{self.y_axis.value} vs {self.x_axis.value}",
             template=self.color_theme.value,
-            hover_data=["cycle_number"]
+            hover_data=["cycle_number", self.group_by.value]
         )
 
-        # Add custom hover info if cell metadata is available
-        if hasattr(self, 'cell_metadata') and self.selected_cell_metadata is not None and not self.selected_cell_metadata.is_empty():
-            if "experiment_group" in self.cell_metadata.columns:
-                # Create a mapping of cell_id to experiment_group
-                cell_info = {}
-                for row in self.cell_metadata.iter_rows(named=True):
-                    cell_id = row["cell_id"]
-                    exp_group = row.get("experiment_group", "Unknown")
-                    cell_info[cell_id] = exp_group
-
-                # Add custom hover text
-                for i, cell_id in enumerate(sorted(self.selected_cell_ids)):
-                    if i < len(fig.data):  # Ensure we don't go out of bounds
-                        exp_group = cell_info.get(cell_id, "Unknown")
-                        fig.data[i].hovertemplate = (
-                                f"Cell ID: {cell_id}<br>" +
-                                f"Experiment: {exp_group}<br>" +
-                                f"{self.x_axis.value}: %{{x}}<br>" +
-                                f"{self.y_axis.value}: %{{y:.2f}}"
-                        )
+        # Update hover template
+        for trace in fig.data:
+            trace.hovertemplate = (
+                    f"{self.group_by.value.replace('_', ' ').title()}: %{{customdata[1]}}<br>" +
+                    f"Cycle: %{{x}}<br>" +
+                    f"{self.y_axis.value}: %{{y:.2f}}<extra></extra>"
+            )
 
         fig.update_layout(
             height=600,
