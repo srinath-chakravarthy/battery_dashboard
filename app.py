@@ -370,6 +370,63 @@ class CyclePlotsTab(param.Parameterized):
             self.cycle_plot_container.append("No cycle data available for the selected cells.")
             return
 
+        if not hasattr(self, 'cycle_data') or self.cycle_data.is_empty():
+            self.cycle_plot_container.append("No cycle data available. Please select cells first.")
+            return
+        cycle_data = self.cycle_data
+        # Merge group information if available
+        if self.selected_cell_metadata is not None and not self.selected_cell_metadata.is_empty():
+            # Merge with cell metadata
+            cell_metadata = self.selected_cell_metadata
+
+            # Check if group_by is the same as cell_id to avoid duplicate columns
+            if self.group_by.value == 'cell_id':
+                # Just use the cycle data as is, since it already has cell_id
+                merged_df = cycle_data
+            else:
+                # Select cell_id and the grouping column to join
+                merged_df = cycle_data.join(
+                    cell_metadata.select(['cell_id', self.group_by.value]),
+                    on='cell_id',
+                    how='left')
+
+        else:
+            merged_df = self.cycle_data
+
+        if 'total_active_mass_g' in merged_df.columns:
+            # Find all columns that end with "capacity" or "energy" but don't already have "_specific_mAh_g" or "_specific_Wh_g"
+            capacity_cols = [col for col in merged_df.columns
+                             if col.endswith('capacity') and not col.endswith('_specific_mAh_g')]
+            energy_cols = [col for col in merged_df.columns
+                           if col.endswith('energy') and not col.endswith('_specific_Wh_g')]
+
+            specific_value_exprs = []
+
+            # Add expressions for capacity columns (convert to mAh/g)
+            for col in capacity_cols:
+                specific_value_exprs.append(
+                    (
+                        pl.when(pl.col('total_active_mass_g') > 0)
+                        .then(1000 * pl.col(col) / pl.col('total_active_mass_g'))
+                        .otherwise(None)
+                    ).alias(f"{col}_specific_mAh_g")
+                )
+
+            # Add expressions for energy columns (convert to Wh/g)
+            for col in energy_cols:
+                specific_value_exprs.append(
+                    (
+                        pl.when(pl.col('total_active_mass_g') > 0)
+                        .then(pl.col(col) / pl.col('total_active_mass_g'))
+                        .otherwise(None)
+                    ).alias(f"{col}_specific_Wh_g")
+                )
+                print("Found columns with capacity")
+            if specific_value_exprs:
+                print("Adding Specific capacity and energy to to cols")
+                merged_df = merged_df.with_columns(specific_value_exprs)
+        self.cycle_data = merged_df
+
         # Update axis options based on available columns
         numeric_cols = [col for col in self.cycle_data.columns
                         if self.cycle_data[col].dtype in [pl.Float32, pl.Float64, pl.Int32, pl.Int64]]
@@ -401,6 +458,7 @@ class CyclePlotsTab(param.Parameterized):
         self.y_axis.options = numeric_cols
         self.y_axis.value = current_y
 
+
         # Now update the plots with the loaded data
         self.update_plots()
 
@@ -408,35 +466,14 @@ class CyclePlotsTab(param.Parameterized):
         """Update plots based on the current selection and plot settings."""
         self.cycle_plot_container.clear()
 
-        if not hasattr(self, 'cycle_data') or self.cycle_data.is_empty():
-            self.cycle_plot_container.append("No cycle data available. Please select cells first.")
-            return
-        cycle_data = self.cycle_data
-        # Merge group information if available
-        if self.selected_cell_metadata is not None and not self.selected_cell_metadata.is_empty():
-            # Merge with cell metadata
-            cell_metadata = self.selected_cell_metadata
 
-            # Check if group_by is the same as cell_id to avoid duplicate columns
-            if self.group_by.value == 'cell_id':
-                # Just use the cycle data as is, since it already has cell_id
-                merged_df = cycle_data
-            else:
-                # Select cell_id and the grouping column to join
-                merged_df = cycle_data.join(
-                    cell_metadata.select(['cell_id', self.group_by.value]),
-                    on='cell_id',
-                    how='left')
-
-        else:
-            merged_df = self.cycle_data
 
         # Create plotly figure using the already loaded cycle data
         fig = go.Figure()
         # For getting unique groups and filtering in Polars
-        unique_groups = merged_df[self.group_by.value].unique().to_numpy()
+        unique_groups = self.cycle_data[self.group_by.value].unique().to_numpy()
         for group in unique_groups:
-            group_data = merged_df.filter(pl.col(self.group_by.value) == group)
+            group_data = self.cycle_data.filter(pl.col(self.group_by.value) == group)
             fig.add_trace(
                 go.Scatter(
                     x=group_data[self.x_axis.value].to_numpy(),
