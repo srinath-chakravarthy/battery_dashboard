@@ -104,14 +104,10 @@ class CellSelectorTab(param.Parameterized):
 
     def __init__(self, cell_data, **params):
         super().__init__(**params)
-        self.cell_data = cell_data# Store the original full dataset
-        self.original_cell_data = cell_data
+        self.cell_data = cell_data  # Store the original full dataset
 
-        # Filtered and displayed data might change
+        # Filtered and displayed data
         self.filtered_cell_data = cell_data
-
-        # Track selected rows across filtering
-        self.selected_rows = []
 
         self.required_columns = ["cell_id"]
         self.optional_columns = [col for col in cell_data.columns if col not in self.required_columns]
@@ -149,16 +145,23 @@ class CellSelectorTab(param.Parameterized):
 
     def update_table_data(self, *events):
         # Apply row filters to get filtered rows (all columns)
-        self.filtered_data = apply_filters(self.cell_data, self.filter_widgets)
+        self.filtered_cell_data = apply_filters(self.cell_data, self.filter_widgets)
+
         # Get selected columns for display
-        selected_columns = self.column_selector.value or self.default_columns
+        selected_columns = self.column_selector.value or []
         display_columns = self.required_columns + [col for col in selected_columns if col not in self.required_columns]
+
         # Create display DataFrame with filtered rows and selected columns
-        display_df = self.filtered_data.select(display_columns).to_pandas()
-        # Update the table view with column-filtered dat
+        display_df = self.filtered_cell_data.select(display_columns).to_pandas()
+
+        # Update the table view with column-filtered data
         self.data_table.value = display_df
-        # Notify any listeners that filtered_data has been updated
-        self.param.trigger('filtered_data')
+
+        # Clear selection when filters change
+        self.data_table.selection = []
+        self.selected_cell_ids = []
+        self.selected_data = None
+        self.selection_indicator.object = "**0** cells selected"
 
         print(f"Table updated with {len(display_df)} rows after filtering")
 
@@ -168,18 +171,17 @@ class CellSelectorTab(param.Parameterized):
             self.selected_cell_ids = []
             self.selected_data = None
             self.selection_indicator.object = "**0** cells selected"
-            self.param.trigger('selected_cell_ids')
-            self.param.trigger('selected_data')
             return
-        table_data = self.data_table.value
-        # For Polars DataFrame, use row selection by index
+
         # Store the complete selected rows data (all columns)
-        self.selected_data = self.filtered_data.take(selected_indices)
+        self.selected_data = self.filtered_cell_data.take(selected_indices)
 
         # Get the cell IDs from the selected rows
-        self.selected_cell_ids = self.selected_data.select("cell_id").to_list()
+        self.selected_cell_ids = self.selected_data["cell_id"].to_list()
 
         self.selection_indicator.object = f"**{len(self.selected_cell_ids)}** cells selected"
+
+        # Trigger parameter updates to notify listeners
         self.param.trigger('selected_cell_ids')
         self.param.trigger('selected_data')
 
@@ -198,22 +200,40 @@ class CellSelectorTab(param.Parameterized):
 
 # Modular class for Cycle Plots Tab
 class CyclePlotsTab(param.Parameterized):
-    selected_cell_ids = param.List(default=[])
-    selected_data = param.DataFrame(default=None)
-
     def __init__(self, **params):
         super().__init__(**params)
+        self.selected_cell_ids = []
+        self.selected_data = None
+
         self.color_theme = pn.widgets.Select(
             name="Color Theme",
             options=["plotly", "plotly_white", "plotly_dark", "ggplot2",
                      "seaborn", "simple_white", "none"],
             value="plotly"
         )
+
+        self.plot_type = pn.widgets.Select(
+            name="Plot Type",
+            options=["Discharge Capacity", "Charge Capacity", "Coulombic Efficiency", "Energy Efficiency"],
+            value="Discharge Capacity"
+        )
+
         self.cycle_plot_container = pn.Column("No cells selected. Please select cells in the Cell Selector tab.")
 
-    @param.depends("selected_cell_ids", "selected_data" watch=True)
-    def update_cycle_plots(self):
+        # Set up event handlers
+        self.color_theme.param.watch(self.update_plots, "value")
+        self.plot_type.param.watch(self.update_plots, "value")
+
+    def update_selection(self, cell_ids, cell_data):
+        """Update the selected cell IDs and data."""
+        self.selected_cell_ids = cell_ids
+        self.selected_data = cell_data
+        self.update_plots()
+
+    def update_plots(self, event=None):
+        """Update plots based on the current selection and plot settings."""
         self.cycle_plot_container.clear()
+
         if not self.selected_cell_ids:
             self.cycle_plot_container.append(
                 "No cells selected. Please select cells in the Cell Selector tab."
@@ -230,26 +250,62 @@ class CyclePlotsTab(param.Parameterized):
             )
             return
 
+        # Determine y-axis variable based on selected plot type
+        plot_type_mapping = {
+            "Discharge Capacity": "discharge_capacity",
+            "Charge Capacity": "charge_capacity",
+            "Coulombic Efficiency": "coulombic_efficiency",
+            "Energy Efficiency": "energy_efficiency"
+        }
+
+        y_var = plot_type_mapping.get(self.plot_type.value, "discharge_capacity")
+        y_label = self.plot_type.value
+
+        # Create plotly figure
         fig = px.line(
             cycle_data.to_pandas(),
             x="regular_cycle_number",
-            y="discharge_capacity",
+            y=y_var,
             color="cell_id",
-            title="Cycle Performance",
+            title=f"{self.plot_type.value} vs Cycle Number",
             template=self.color_theme.value,
+            hover_data=["cycle_number"]
         )
+
+        # Add custom data to hover info if available
+        if self.selected_data is not None and not self.selected_data.is_empty():
+            if "experiment_group" in self.selected_data.columns:
+                # Create a mapping of cell_id to experiment_group
+                cell_info = {}
+                for row in self.selected_data.iter_rows(named=True):
+                    cell_id = row["cell_id"]
+                    exp_group = row.get("experiment_group", "Unknown")
+                    cell_info[cell_id] = exp_group
+
+                # Add custom hover text
+                for i, cell_id in enumerate(sorted(self.selected_cell_ids)):
+                    exp_group = cell_info.get(cell_id, "Unknown")
+                    fig.data[i].hovertemplate = (
+                            f"Cell ID: {cell_id}<br>" +
+                            f"Experiment: {exp_group}<br>" +
+                            f"Cycle: %{{x}}<br>" +
+                            f"{y_label}: %{{y:.2f}}"
+                    )
+
         fig.update_layout(
             height=600,
             legend_title_text="Cell ID",
             xaxis_title="Cycle Number",
-            yaxis_title="Discharge Capacity (mAh)",
+            yaxis_title=y_label,
         )
+
         self.cycle_plot_container.clear()
         self.cycle_plot_container.append(pn.pane.Plotly(fig))
 
     def create_layout(self):
         sidebar = pn.Column(
             pn.pane.Markdown("## Plot Settings"),
+            self.plot_type,
             self.color_theme,
             width=300,
             sizing_mode="fixed",
@@ -257,16 +313,6 @@ class CyclePlotsTab(param.Parameterized):
         main = pn.Column(self.cycle_plot_container)
         return pn.Row(sidebar, main)
 
-    def set_filtered_data(self, filtered_data):
-        """
-        Receive the row-filtered data (with all columns) from CellSelectorTab
-        This data includes all rows that pass the filters, not just selected rows
-        """
-        self.filtered_data = filtered_data
-
-        # Optional: Update any overview plots that depend on the full filtered dataset
-        # For example, distribution plots or summary statistics
-        print(f"CyclePlotsTab received filtered data with {len(filtered_data) if filtered_data is not None else 0} rows")
 
 # Main Dashboard
 class BatteryDashboard(param.Parameterized):
@@ -275,40 +321,18 @@ class BatteryDashboard(param.Parameterized):
         self.cell_data = load_initial_data()
         self.cell_selector_tab = CellSelectorTab(self.cell_data)
         self.cycle_plots_tab = CyclePlotsTab()
-        self.link_tabs()
 
-    def link_tabs(self):
-        # self.cycle_plots_tab.param.set_param(
-        #     selected_cell_ids=self.cell_selector_tab.selected_cell_ids
-        # )
-        # self.cell_selector_tab.param.watch(
-        #     lambda event: self.cycle_plots_tab.param.set_param(selected_cell_ids=event.new),
-        #     "selected_cell_ids"
-        # )
+        # Link tab interactions
+        self.cell_selector_tab.param.watch(self.on_selection_change, ["selected_cell_ids", "selected_data"])
 
-        # Watch for changes in selection
-        self.cell_selector_tab.param.watch(
-            lambda event: self.handle_selection_change(event),
-            'selected_cell_ids'
-        )
-
-        # Watch for changes in filtered data
-        self.cell_selector_tab.param.watch(
-            lambda event: self.handle_filtered_data_change(event),
-            'selected_data'
-        )
-    def handle_selection_change(self, event):
-        # Update cycle plots tab with both selected IDs and complete row data
-        self.cycle_plots_tab.update_cycle_plots(
-            self.cell_selector_tab.selected_data,  # Complete row data for selected cells
-            self.cell_selector_tab.selected_cell_ids  # IDs of selected cells
-        )
-
-    def handle_filtered_data_change(self, event):
-        # Update cycle plots tab with filtered data (all rows passing filters, all columns)
-        self.cycle_plots_tab.set_filtered_data(
-            self.cell_selector_tab.filtered_data
-        )
+    def on_selection_change(self, event):
+        # Only update if both selected_cell_ids and selected_data are available
+        if hasattr(self.cell_selector_tab, "selected_cell_ids") and hasattr(self.cell_selector_tab, "selected_data"):
+            if self.cell_selector_tab.selected_data is not None:
+                self.cycle_plots_tab.update_selection(
+                    self.cell_selector_tab.selected_cell_ids,
+                    self.cell_selector_tab.selected_data
+                )
 
     def create_layout(self):
         cell_selector_page = self.cell_selector_tab.create_layout()
@@ -318,6 +342,7 @@ class BatteryDashboard(param.Parameterized):
             ("Cell Selector", cell_selector_page),
             ("Cycle Plots", cycle_plots_page),
         )
+
         return pn.template.MaterialTemplate(
             title="Battery Analytics Dashboard",
             main=tabs,
