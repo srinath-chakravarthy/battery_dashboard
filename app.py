@@ -301,7 +301,7 @@ class CyclePlotsTab(param.Parameterized):
             return
 
         # Create plotly figure using the already loaded cycle data
-        fig = px.line(
+        fig = px.scatter(
             self.cycle_data.to_pandas(),
             x=self.x_axis.value,
             y=self.y_axis.value,
