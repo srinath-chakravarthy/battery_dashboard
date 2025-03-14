@@ -1,6 +1,8 @@
 import panel as pn
 import polars as pl
 import plotly.express as px
+import plotly.graph_objects as go
+
 import requests
 import os
 from datetime import datetime
@@ -248,6 +250,7 @@ class CyclePlotsTab(param.Parameterized):
         self.color_theme.param.watch(self.update_plots, "value")
         self.x_axis.param.watch(self.update_plots, "value")
         self.y_axis.param.watch(self.update_plots, "value")
+        self.group_by.param.watch(self.update_plots, "value")
 
     def update_selection(self, cell_ids, cell_data):
         """Update the selected cell IDs and data."""
@@ -306,46 +309,51 @@ class CyclePlotsTab(param.Parameterized):
         if not hasattr(self, 'cycle_data') or self.cycle_data.is_empty():
             self.cycle_plot_container.append("No cycle data available. Please select cells first.")
             return
-
+        cycle_data = self.cycle_data
         # Merge group information if available
         if self.selected_cell_metadata is not None and not self.selected_cell_metadata.is_empty():
-            # Convert cycle data to pandas
-            cycle_df = self.cycle_data.to_pandas()
-
             # Merge with cell metadata
-            cell_metadata_df = self.selected_cell_metadata.to_pandas()
+            cell_metadata = self.selected_cell_metadata
 
-            # Ensure we're merging on a common column
-            merged_df = cycle_df.merge(
-                cell_metadata_df[['cell_id', self.group_by.value]],
-                on='cell_id',
-                how='left'
-            )
+            # Check if group_by is the same as cell_id to avoid duplicate columns
+            if self.group_by.value == 'cell_id':
+                # Just use the cycle data as is, since it already has cell_id
+                merged_df = cycle_data
+            else:
+                # Select cell_id and the grouping column to join
+                merged_df = cycle_data.join(
+                    cell_metadata.select(['cell_id', self.group_by.value]),
+                    on='cell_id',
+                    how='left')
+
         else:
-            merged_df = self.cycle_data.to_pandas()
+            merged_df = self.cycle_data
 
         # Create plotly figure using the already loaded cycle data
-        fig = px.scatter(
-            merged_df,
-            x=self.x_axis.value,
-            y=self.y_axis.value,
-            color=self.group_by.value,
-            title=f"{self.y_axis.value} vs {self.x_axis.value}",
-            template=self.color_theme.value,
-            hover_data=["cycle_number", self.group_by.value]
-        )
+        fig = go.Figure()
+        # For getting unique groups and filtering in Polars
+        unique_groups = merged_df[self.group_by.value].unique().to_numpy()
+        for group in unique_groups:
+            group_data = merged_df.filter(pl.col(self.group_by.value) == group)
+            fig.add_trace(
+                go.Scatter(
+                    x=group_data[self.x_axis.value].to_numpy(),
+                    y=group_data[self.y_axis.value].to_numpy(),
+                    mode='markers',
+                    name=str(group),
+                    hovertemplate=(
+                        f"{self.group_by.value.replace('_', ' ').title()}: {group}<br>" +
+                        f"{self.x_axis.value}: %{{x}}<br>" +
+                        f"{self.y_axis.value}: %{{y:.2f}}<extra></extra>"
+                    )
 
-        # Update hover template
-        for trace in fig.data:
-            trace.hovertemplate = (
-                    f"{self.group_by.value.replace('_', ' ').title()}: %{{customdata[1]}}<br>" +
-                    f"Cycle: %{{x}}<br>" +
-                    f"{self.y_axis.value}: %{{y:.2f}}<extra></extra>"
+                )
             )
 
         fig.update_layout(
             height=600,
-            legend_title_text="Cell ID",
+            template = self.color_theme.value,
+            legend_title_text=self.group_by.value.replace('_', ' ').title(),
             xaxis_title=self.x_axis.value.replace('_', ' ').title(),
             yaxis_title=self.y_axis.value.replace('_', ' ').title(),
         )
@@ -357,6 +365,9 @@ class CyclePlotsTab(param.Parameterized):
             pn.pane.Markdown("## Plot Settings", styles={'background': '#f0f0f0', 'padding': '10px'}),
             self.x_axis,
             self.y_axis,
+            pn.pane.Markdown("## Grouping"),
+            self.group_by,
+            pn.pane.Markdown("## Appearance"),
             self.color_theme,
             pn.layout.Divider(),
             pn.pane.Markdown("### Plot Options", styles={'padding': '10px'}),
