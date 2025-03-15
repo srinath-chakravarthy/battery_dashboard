@@ -14,7 +14,7 @@ import param
 load_dotenv()
 
 # Panel extensions
-pn.extension("plotly", "tabulator", sizing_mode="stretch_width")
+pn.extension("plotly", "tabulator", "modal", sizing_mode="stretch_width")
 
 pn.extension(raw_css=["""
     /* Make checkboxes significantly larger and more visible */
@@ -348,62 +348,86 @@ class CyclePlotsTab(param.Parameterized):
 
         self.create_plot_settings_ui_elements()
 
+        self.setup_event_handlers()
+
         self.cycle_plot_container = pn.Column("No cells selected. Please select cells in the Cell Selector tab.")
 
-        def setup_event_handlers(self):
-            """Set up event handlers for plot controls"""
-            # Existing control handlers
-            self.color_theme.param.watch(self.update_plots, "value")
-            self.x_axis.param.watch(self.update_plots, "value")
-            self.y_axis.param.watch(self.update_plots, "value")
-            self.group_by.param.watch(self.update_plots, "value")
+    def setup_event_handlers(self):
+        """Set up event handlers for plot controls"""
+        # Existing control handlers
+        self.color_theme.param.watch(self.update_plots, "value")
+        self.x_axis.param.watch(self.update_plots, "value")
+        self.y_axis.param.watch(self.update_plots, "value")
+        self.group_by.param.watch(self.update_plots, "value")
 
-            # New control handlers
-            self.plot_type.param.watch(self.update_plots, "value")
+        # New control handlers
+        self.plot_type.param.watch(self.update_plots, "value")
 
-            # Button click handlers
-            self.series_settings_button.on_click(self.open_series_settings)
-            self.advanced_settings_button.on_click(self.open_advanced_settings)
+        # For series settings
+        self.series_apply_button = pn.widgets.Button(name="Apply", button_type="success", width=100)
+        self.series_cancel_button = pn.widgets.Button(name="Cancel", button_type="danger", width=100)
 
-            # Modal button handlers
-            self.series_settings_card.footer[0].on_click(self.apply_series_settings)  # Apply button
-            self.series_settings_card.footer[1].on_click(self.close_series_settings)  # Cancel button
+        self.series_apply_button.on_click(self.apply_series_settings)
+        self.series_cancel_button.on_click(self.close_series_settings)
 
-            self.advanced_settings_card.footer[0].on_click(self.apply_advanced_settings)  # Apply button
-            self.advanced_settings_card.footer[1].on_click(self.close_advanced_settings)  # Cancel button
+        # For advanced settings
+        self.advanced_apply_button = pn.widgets.Button(name="Apply", button_type="success", width=100)
+        self.advanced_cancel_button = pn.widgets.Button(name="Cancel", button_type="danger", width=100)
 
-        def open_series_settings(self, event):
-            """Open the series settings modal"""
-            self._update_series_settings_card()
-            self.series_settings_card.open = True
+        self.advanced_apply_button.on_click(self.apply_advanced_settings)
+        self.advanced_cancel_button.on_click(self.close_advanced_settings)
 
-        def close_series_settings(self, event):
-            """Close the series settings modal without applying changes"""
-            self.series_settings_card.open = False
+        # Also update the card collapsed state event handlers if needed
+        self.series_settings_card.param.watch(self._update_series_settings_card, "collapsed")
+        # self.advanced_settings_card.param.watch(self._update_advanced_settings_card, "collapsed")
 
-        def apply_series_settings(self, event):
-            """Apply series settings and update the plot"""
-            self.series_settings_card.open = False
-            self.update_plots()
 
-        def open_advanced_settings(self, event):
-            """Open the advanced settings modal"""
-            # Pre-populate values from current plot if available
-            if hasattr(self, 'x_axis') and self.x_axis.value:
-                self.advanced_settings['x_axis_title'].value = self.x_axis.value.replace('_', ' ').title()
-            if hasattr(self, 'y_axis') and self.y_axis.value:
-                self.advanced_settings['y_axis_title'].value = self.y_axis.value.replace('_', ' ').title()
+    def open_series_settings(self, event):
+        """Open the series settings modal"""
+        self._update_series_settings_card()
+        self.series_settings_card.open = True
 
-            self.advanced_settings_card.open = True
+    def close_series_settings(self, event):
+        """Close the series settings modal without applying changes"""
+        self.series_settings_card.open = False
 
-        def close_advanced_settings(self, event):
-            """Close the advanced settings modal without applying changes"""
-            self.advanced_settings_card.open = False
+    def apply_series_settings(self):
+        # Update settings from current values
+        self.series_settings = {
+            'plot_type': self.plot_type.value,
+            'group_by': self.group_by.value,
+            'color_theme': self.color_theme.value,
+            'x_axis': self.x_axis.value,
+            'y_axis': self.y_axis.value
+        }
 
-        def apply_advanced_settings(self, event):
-            """Apply advanced settings and update the plot"""
-            self.advanced_settings_card.open = False
-            self.update_plots()
+        # Update the card display
+        self._update_series_settings_card()
+
+        # This is the critical line that was missing - update the plots
+        self.update_plots()
+
+        # Close the settings card
+        self.close_series_settings()
+
+    def open_advanced_settings(self, event):
+        """Open the advanced settings modal"""
+        # Pre-populate values from current plot if available
+        if hasattr(self, 'x_axis') and self.x_axis.value:
+            self.advanced_settings['x_axis_title'].value = self.x_axis.value.replace('_', ' ').title()
+        if hasattr(self, 'y_axis') and self.y_axis.value:
+            self.advanced_settings['y_axis_title'].value = self.y_axis.value.replace('_', ' ').title()
+
+        self.advanced_settings_card.open = True
+
+    def close_advanced_settings(self, event):
+        """Close the advanced settings modal without applying changes"""
+        self.advanced_settings_card.open = False
+
+    def apply_advanced_settings(self, event):
+        """Apply advanced settings and update the plot"""
+        self.advanced_settings_card.open = False
+        self.update_plots()
 
     def create_plot_settings_ui_elements(self):
         # Plot type control (new)
@@ -428,6 +452,13 @@ class CyclePlotsTab(param.Parameterized):
         # Create modals for advanced settings
         self.series_settings_card = self._create_series_settings_card()
         self.advanced_settings_card = self._create_advanced_settings_card()
+        # # Initially hide both cards
+        # self.series_settings_card.layout.visibility = 'hidden'
+        # self.advanced_settings_card.layout.visibility = 'hidden'
+
+        # # Set z-index to ensure series settings appears above advanced settings
+        # self.series_settings_card.layout.z_index = 2
+        # self.advanced_settings_card.layout.z_index = 1
 
     def _create_series_settings_card(self):
         """Create a modal dialog for series-specific settings"""
@@ -439,10 +470,10 @@ class CyclePlotsTab(param.Parameterized):
 
         # Create the card
         card = pn.Card(
+            series_controls,
             title="Series Settings",
             collapsed=True,
             collapsible=True,
-            content=series_controls,
             header_background="#e0e0e0"
         )
 
@@ -452,7 +483,10 @@ class CyclePlotsTab(param.Parameterized):
         return card
 
     def _update_series_settings_card(self):
-        """Update the series settings modal with current series data"""
+        """Update the series settings card with current series data"""
+
+        if event and event.new:
+            return
         if not hasattr(self, 'cycle_data') or self.cycle_data.is_empty():
             return
 
@@ -488,6 +522,13 @@ class CyclePlotsTab(param.Parameterized):
                 styles={"background": "#f9f9f9", "padding": "10px", "border-radius": "5px", "margin-bottom": "10px"}
             )
             series_panels.append(panel)
+
+            # Add buttons at the bottom
+            button_row = pn.Row(
+                self.series_apply_button,
+                self.series_cancel_button,
+                align="end"
+            )
 
         # Update the modal content
         self.series_settings_card.content = pn.Column(
@@ -566,10 +607,10 @@ class CyclePlotsTab(param.Parameterized):
 
         # Create the card
         card = pn.Card(
+            settings_tabs,
             title="Advanced Plot Settings",
             collapsed=True,
             collapsible=True,
-            content=settings_tabs,
             header_background="#e0e0e0"
         )
 
@@ -871,7 +912,11 @@ class CyclePlotsTab(param.Parameterized):
             self.cycle_plot_container,
             pn.Row(
                 self.series_settings_card,
-                self.advanced_settings_card,
+                # self.advanced_settings_card,
+                sizing_mode='stretch_width'
+            ),
+            pn.Row(self.advanced_settings_card,
+                # self.advanced_settings_card,
                 sizing_mode='stretch_width'
             ),
             sizing_mode='stretch_both'
