@@ -9,6 +9,7 @@ from datetime import datetime
 
 from dotenv import load_dotenv
 import param
+import re
 
 # Load environment variables
 load_dotenv()
@@ -105,6 +106,14 @@ def get_cycle_data(cell_ids=None, cell_metadata=None):
     if not cell_ids:
         return pl.DataFrame()
 
+    # Create a progress widget
+    # progress = pn.widgets.Progress(value=0, max=len(cell_ids), name="Loading Cells")
+    # if status_indicator:
+    #     status_indicator.object = pn.Column(
+    #         "**Fetching cycle data from database...**",
+    #         progress
+    #     )
+
     all_results = []
     for cell_id in cell_ids:
         params = {"cell_ids": str(cell_id)}
@@ -164,6 +173,8 @@ def apply_filters(data, filters):
 class CellSelectorTab(param.Parameterized):
     selected_cell_ids = param.List(default=[], doc="Selected cell IDs")
     selected_data = param.Parameter(default=None, doc="Full data for selected rows")
+    search_query = param.String(default="", doc="Search query")
+
 
     def __init__(self, cell_data, **params):
         super().__init__(**params)
@@ -176,6 +187,24 @@ class CellSelectorTab(param.Parameterized):
         self.optional_columns = [col for col in cell_data.columns if col not in self.required_columns]
         self.default_columns = ["cell_id", "cell_name", "actual_nominal_capacity_ah", "regular_cycles",
                                 "last_discharge_capacity", "discharge_capacity_retention"]
+
+        # Create search bar
+        self.search_input = pn.widgets.TextInput(
+            name="Search",
+            placeholder="Enter search terms (column:value or free text)",
+            width=400
+        )
+        self.search_button = pn.widgets.Button(
+            name="Search",
+            button_type="primary",
+            width=100
+        )
+        self.clear_search_button = pn.widgets.Button(
+            name="Clear",
+            button_type="default",
+            width=100
+        )
+        self.search_info = pn.pane.Markdown("", styles={"color": "blue", "font-style": "italic"})
 
         self.filter_widgets = create_filter_widgets(self.cell_data)
         self.selection_indicator = pn.pane.Markdown("**0** cells selected")
@@ -224,9 +253,130 @@ class CellSelectorTab(param.Parameterized):
         # Add button click handler
         self.load_button.on_click(self.trigger_selection_update)
 
+        # Add search event handlers
+        self.search_button.on_click(self.on_search)
+        self.clear_search_button.on_click(self.clear_search)
+        self.search_input.param.watch(self.on_search_enter, "value_input")
+
+    def on_search_enter(self, event):
+        """Handle pressing Enter in the search box"""
+        if event.new and event.new.endswith('\n'):
+            # Remove the newline character
+            self.search_input.value = event.new.rstrip('\n')
+            self.on_search(None)
+
+    def on_search(self, event):
+        """Execute the search query"""
+        query = self.search_input.value.strip()
+        self.search_query = query
+        self.update_table_data()
+
+    def clear_search(self, event):
+        """Clear the search query and reset the table"""
+        self.search_input.value = ""
+        self.search_query = ""
+        self.search_info.object = ""
+        self.update_table_data()
+
+    def apply_search_query(self, df):
+        """Apply the search query to the dataframe"""
+        if not self.search_query:
+            return df
+
+        # Parse the search query
+        # Support both specific column searches (column:value) and free text search
+        query = self.search_query.lower()
+
+        # Check for column:value pattern
+        column_search_pattern = r'(\w+):\s*([\w.%<>=]+)'
+        column_searches = re.findall(column_search_pattern, query)
+
+        filtered_df = df
+        search_applied = False
+
+        # Handle column-specific searches
+        for col_name, search_value in column_searches:
+            # Remove these matches from the query for later free text search
+            query = query.replace(f"{col_name}:{search_value}", "").strip()
+
+            # Find the actual column name (case-insensitive match)
+            actual_col = next((c for c in df.columns if c.lower() == col_name.lower()), None)
+
+            if actual_col is None:
+                self.search_info.object = f"⚠️ Column '{col_name}' not found"
+                continue
+
+            # Check for comparison operators
+            if any(op in search_value for op in ['>', '<', '=']):
+                try:
+                    # Process numeric comparisons
+                    if '>=' in search_value:
+                        val = float(search_value.replace('>=', '').strip())
+                        filtered_df = filtered_df.filter(pl.col(actual_col) >= val)
+                    elif '<=' in search_value:
+                        val = float(search_value.replace('<=', '').strip())
+                        filtered_df = filtered_df.filter(pl.col(actual_col) <= val)
+                    elif '>' in search_value:
+                        val = float(search_value.replace('>', '').strip())
+                        filtered_df = filtered_df.filter(pl.col(actual_col) > val)
+                    elif '<' in search_value:
+                        val = float(search_value.replace('<', '').strip())
+                        filtered_df = filtered_df.filter(pl.col(actual_col) < val)
+                    elif '=' in search_value:
+                        val_str = search_value.replace('=', '').strip()
+                        # Try to convert to number if it looks numeric
+                        try:
+                            val = float(val_str)
+                            filtered_df = filtered_df.filter(pl.col(actual_col) == val)
+                        except ValueError:
+                            # It's a string
+                            filtered_df = filtered_df.filter(
+                                pl.col(actual_col).cast(pl.Utf8).str.contains(val_str, literal=True))
+                    search_applied = True
+                except ValueError:
+                    self.search_info.object = f"⚠️ Invalid numeric value in '{search_value}'"
+            else:
+                # Simple text match
+                filtered_df = filtered_df.filter(
+                    pl.col(actual_col).cast(pl.Utf8).str.contains(search_value, literal=True))
+                search_applied = True
+
+        # Apply free text search across all string columns if query still has content
+        query = query.strip()
+        if query:
+            # Build a combined filter for all string columns
+            string_filters = []
+            for col in df.columns:
+                # Only search string-compatible columns
+                try:
+                    # Create a filter for this column
+                    string_filters.append(pl.col(col).cast(pl.Utf8).str.contains(query))
+                except:
+                    # Skip columns that can't be converted to string for searching
+                    continue
+
+            if string_filters:
+                # Combine all column filters with OR
+                combined_filter = string_filters[0]
+                for filter_expr in string_filters[1:]:
+                    combined_filter = combined_filter | filter_expr
+
+                filtered_df = filtered_df.filter(combined_filter)
+                search_applied = True
+
+        if search_applied:
+            rows_found = len(filtered_df)
+            total_rows = len(df)
+            self.search_info.object = f"Found {rows_found} of {total_rows} cells matching search criteria"
+
+        return filtered_df
+
     def update_table_data(self, *events):
         # Apply row filters to get filtered rows (all columns)
         self.filtered_cell_data = apply_filters(self.cell_data, self.filter_widgets)
+
+        # Apply search query
+        self.filtered_cell_data = self.apply_search_query(self.filtered_cell_data)
 
         # Get selected columns for display
         selected_columns = self.column_selector.value or []
@@ -271,6 +421,8 @@ class CellSelectorTab(param.Parameterized):
     def trigger_selection_update(self, event):
         """Explicit method to trigger parameter updates when button is clicked"""
         if self.selected_cell_ids:
+            self.selection_indicator.object = f"**Fetching data for {len(self.selected_cell_ids)} cells...**"
+
             print(f"Loading data for {len(self.selected_cell_ids)} selected cells...")
             self.param.trigger('selected_cell_ids')
             self.param.trigger('selected_data')
@@ -278,6 +430,14 @@ class CellSelectorTab(param.Parameterized):
             print("No cells selected")
 
     def create_layout(self):
+        # Create search components in a horizontal row
+        search_row = pn.Row(
+            self.search_input,
+            self.search_button,
+            self.clear_search_button,
+            styles={"margin-bottom": "10px"}
+        )
+
         sidebar = pn.Column(
             pn.pane.Markdown("## Filters"),
             *self.filter_widgets.values(),
@@ -297,6 +457,7 @@ class CellSelectorTab(param.Parameterized):
         # Stack the table and action row in a column with scrollbars
         main_content = pn.Column(
             pn.pane.Markdown("### Cell Data", styles={"margin-bottom": "10px"}),
+            search_row,
             pn.Column(
                 self.data_table,
                 max_height=650,  # Set maximum height
@@ -452,13 +613,6 @@ class CyclePlotsTab(param.Parameterized):
         # Create modals for advanced settings
         self.series_settings_card = self._create_series_settings_card()
         self.advanced_settings_card = self._create_advanced_settings_card()
-        # # Initially hide both cards
-        # self.series_settings_card.layout.visibility = 'hidden'
-        # self.advanced_settings_card.layout.visibility = 'hidden'
-
-        # # Set z-index to ensure series settings appears above advanced settings
-        # self.series_settings_card.layout.z_index = 2
-        # self.advanced_settings_card.layout.z_index = 1
 
     def _create_series_settings_card(self):
         """Create a modal dialog for series-specific settings"""
@@ -482,7 +636,7 @@ class CyclePlotsTab(param.Parameterized):
 
         return card
 
-    def _update_series_settings_card(self):
+    def _update_series_settings_card(self, event=None):
         """Update the series settings card with current series data"""
 
         if event and event.new:
@@ -531,10 +685,11 @@ class CyclePlotsTab(param.Parameterized):
             )
 
         # Update the modal content
-        self.series_settings_card.content = pn.Column(
+        self.series_settings_card.objects = [
             pn.pane.Markdown("## Series Settings", styles={"text-align": "center"}),
-            pn.Column(*series_panels, scroll=True, height=400)
-        )
+            pn.Column(*series_panels, scroll=True, height=400),
+            button_row
+        ]
 
     def _create_advanced_settings_card(self):
         """Create a modal dialog for advanced plot settings"""
