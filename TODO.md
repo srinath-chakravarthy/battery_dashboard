@@ -1,10 +1,10 @@
 # TODO List 
 # Cycle Selector Tab
 ## Featurs to add 
-- [ ] Implement Select all cells in the filter/selection button 
-- [ ] Implement Clear all selections in the filter/selection button 
-- [ ] Implement summary stats for selected cells. Should this be on a Card. What will look nice
-- [ ] Modify Load cycle data to be active only if there are selected cells in the list 
+- [x] Implement Select all cells in the filter/selection button 
+- [x] Implement Clear all selections in the filter/selection button 
+- [x] Implement summary stats for selected cells. Should this be on a Card. What will look nice
+- [x] Modify Load cycle data to be active only if there are selected cells in the list 
   - [ ] Add status indicator for Redash query 
   - [ ] Add confirmation panel if number of cells > 100
 
