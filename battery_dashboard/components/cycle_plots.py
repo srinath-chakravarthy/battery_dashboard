@@ -1,3 +1,5 @@
+# battery_dashboard/components/cycle_plots.py
+# Main module for Cycle Plots
 import panel as pn
 import polars as pl
 import plotly.graph_objects as go

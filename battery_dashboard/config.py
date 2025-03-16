@@ -1,3 +1,5 @@
+# battery_dashboard/config.py
+
 # Redash API configuration
 import os
 REDASH_URL = os.getenv("REDASH_URL", "http://192.168.80.30:8080")

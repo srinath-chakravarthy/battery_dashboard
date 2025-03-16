@@ -4,7 +4,7 @@ from battery_dashboard import main
 
 if __name__ == "__main__":
     subprocess.run([
-        "panel", "serve", "main.py",
+        "panel", "serve", "battery_dashboard/main.py",
         "--port", "8060",
         "--show",
         "--autoreload"

@@ -1,3 +1,4 @@
+# battery_dashboard/components/cell_selector.py
 # Modular class for Cell Selector Tab
 import panel as pn
 import polars as pl
@@ -99,6 +100,8 @@ class CellSelectorTab(param.Parameterized):
         # Initialize handlers and table
         self.setup_event_handlers()
         self.update_table_data()
+        # Add to the end of your __init__ method:
+        self.update_load_button_state()  # Initialize button state
 
     def setup_event_handlers(self):
         for widget in self.filter_widgets.values():
@@ -252,6 +255,122 @@ class CellSelectorTab(param.Parameterized):
 
         print(f"Table updated with {len(display_df)} rows after filtering")
 
+    def create_selection_buttons(self):
+        """Create the select all and clear selection buttons"""
+        self.select_all_button = pn.widgets.Button(
+            name="Select All",
+            button_type="primary",
+            width=120,
+            icon="check-square",
+            styles={"margin-right": "10px"}
+        )
+
+        self.clear_selection_button = pn.widgets.Button(
+            name="Clear Selection",
+            button_type="default",
+            width=120,
+            icon="square",
+            styles={"margin-right": "10px"}
+        )
+
+        # Add event handlers
+        self.select_all_button.on_click(self.select_all_cells)
+        self.clear_selection_button.on_click(self.clear_selection)
+
+        return pn.Row(
+            self.select_all_button,
+            self.clear_selection_button,
+            align="center",
+            styles={"margin-bottom": "10px"}
+        )
+
+    def select_all_cells(self, event):
+        """Select all cells in the current filtered dataset"""
+        if self.data_table.value is not None and not self.data_table.value.empty:
+            # Get all indices
+            all_indices = list(range(len(self.data_table.value)))
+            self.data_table.selection = all_indices
+            # The on_cell_selection handler will take care of updating selected_cell_ids
+
+    def clear_selection(self, event):
+        """Clear the current selection"""
+        self.data_table.selection = []
+        # The on_cell_selection handler will take care of updating selected_cell_ids
+
+    def update_load_button_state(self):
+        """Update the load button state based on selection"""
+        if self.selected_cell_ids:
+            self.load_button.disabled = False
+            count = len(self.selected_cell_ids)
+            button_text = f"Load Cycle Data ({count})"
+
+            # Add a warning for large selections
+            if count > 20:
+                button_text += " ⚠️"
+                self.load_button.tooltip = f"Loading {count} cells may take some time"
+            else:
+                self.load_button.tooltip = ""
+
+            self.load_button.name = button_text
+        else:
+            self.load_button.disabled = True
+            self.load_button.name = "Load Cycle Data"
+            self.load_button.tooltip = "Select cells first"
+
+    def update_selection_statistics(self):
+        """Update the statistics card with information about selected cells"""
+        if not self.selected_cell_ids or self.selected_data is None or self.selected_data.is_empty():
+            self.stats_content.clear()
+            self.stats_content.append(
+                pn.pane.Markdown("### Select cells to view statistics", styles={"color": "#666"})
+            )
+            return
+
+        self.stats_content.clear()
+
+        # Get basic counts
+        num_cells = len(self.selected_cell_ids)
+
+        # Create basic statistics
+        stats_md = f"### {num_cells} Cells Selected\n\n"
+
+        # Calculate statistical summaries for key numeric columns
+        key_metrics = ["actual_nominal_capacity_ah", "last_discharge_capacity",
+                       "discharge_capacity_retention", "total_cycles"]
+
+        summary_stats = []
+
+        for metric in key_metrics:
+            if metric in self.selected_data.columns:
+                # Calculate statistics
+                try:
+                    metric_data = self.selected_data.select(pl.col(metric))
+                    if not metric_data.is_empty():
+                        mean_val = metric_data.mean().item()
+                        min_val = metric_data.min().item()
+                        max_val = metric_data.max().item()
+                        std_val = metric_data.std().item()
+
+                        # Format the metric name for display
+                        display_name = metric.replace("_", " ").title()
+
+                        # Add to summary stats
+                        summary_stats.append(f"**{display_name}**")
+                        summary_stats.append(f"- Mean: {mean_val:.2f}")
+                        summary_stats.append(f"- Min: {min_val:.2f}")
+                        summary_stats.append(f"- Max: {max_val:.2f}")
+                        summary_stats.append(f"- Std Dev: {std_val:.2f}")
+                        summary_stats.append("")
+                except Exception as e:
+                    print(f"Error calculating stats for {metric}: {str(e)}")
+
+        if summary_stats:
+            stats_md += "\n".join(summary_stats)
+        else:
+            stats_md += "No numeric data available for statistics."
+
+        self.stats_content.append(pn.pane.Markdown(stats_md))
+
     def on_cell_selection(self, event):
         selected_indices = event.new if hasattr(event, "new") else []
         if not selected_indices:
@@ -271,6 +390,10 @@ class CellSelectorTab(param.Parameterized):
 
         self.selection_indicator.object = f"**{len(self.selected_cell_ids)}** cells selected"
 
+        # Update statistics and button state
+        self.update_selection_statistics()
+        self.update_load_button_state()
+
         print(f"Updated selected_cell_ids: {self.selected_cell_ids}")
         print(f"Selected data shape: {self.selected_data.shape if self.selected_data is not None else 'None'}")
 
@@ -285,6 +408,27 @@ class CellSelectorTab(param.Parameterized):
         else:
             print("No cells selected")
 
+    def create_statistics_card(self):
+        """Create a card to display summary statistics for selected cells"""
+        # Create placeholder for stats content
+        self.stats_content = pn.Column(
+            pn.pane.Markdown("### Select cells to view statistics", styles={"color": "#666"})
+        )
+
+        # Create the card
+        stats_card = pn.Card(
+            self.stats_content,
+            title="Selection Statistics",
+            collapsed=False,
+            collapsible=True,
+            header_background="#3b82f6",
+            header_color="white",
+            margin=(0, 0, 10, 0),
+            styles={"box-shadow": "0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06)"}
+        )
+
+        return stats_card
+
     def create_layout(self):
         # Create search components in a horizontal row
         search_row = pn.Row(
@@ -293,12 +437,18 @@ class CellSelectorTab(param.Parameterized):
             self.clear_search_button,
             styles={"margin-bottom": "10px"}
         )
+        # Create selection buttons row
+        selection_buttons = self.create_selection_buttons()
+
+        # Create the statistics card
+        stats_card = self.create_statistics_card()
 
         sidebar = pn.Column(
             pn.pane.Markdown("## Filters"),
             *self.filter_widgets.values(),
             pn.pane.Markdown("## Display Settings"),
             self.column_selector,
+            stats_card,
             self.selection_indicator,
             width=300,
             sizing_mode="fixed",
@@ -314,6 +464,7 @@ class CellSelectorTab(param.Parameterized):
         main_content = pn.Column(
             pn.pane.Markdown("### Cell Data", styles={"margin-bottom": "10px"}),
             search_row,
+            selection_buttons,
             pn.Column(
                 self.data_table,
                 max_height=650,  # Set maximum height

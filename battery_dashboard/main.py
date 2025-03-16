@@ -1,6 +1,5 @@
+# battery_dashboard/main.py
 import panel as pn
-import polars as pl
-
 from dotenv import load_dotenv
 import param
 import re
@@ -56,11 +55,21 @@ print("Panel extensions loaded")
 
 # Main Dashboard
 class BatteryDashboard(param.Parameterized):
+    theme = param.Selector(default="light", objects=["light", "dark"])
     def __init__(self, **params):
         super().__init__(**params)
         self.cell_data = load_initial_data()
         self.cell_selector_tab = CellSelectorTab(self.cell_data)
         self.cycle_plots_tab = CyclePlotsTab()
+
+        # Create the theme toggle
+        self.theme_toggle = pn.widgets.Toggle(
+            name="Dark Mode",
+            value=False,
+            width=100,
+            align="end"
+        )
+        self.theme_toggle.param.watch(self.toggle_theme, "value")
 
         # Link tab interactions
         self.cell_selector_tab.param.watch(self.on_selection_change, ["selected_cell_ids", "selected_data"])
