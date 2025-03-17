@@ -7,6 +7,7 @@ import hvplot.polars
 from bokeh.palettes import Category10, Category20
 from bokeh.models import HoverTool, CrosshairTool, Span, Band
 from ..data.loaders import get_cycle_data
+import pandas as pd
 
 # Configure HoloViews to use Bokeh
 hv.extension('bokeh')
@@ -90,6 +91,9 @@ class CyclePlotsTab(param.Parameterized):
 
         # Create UI elements for the plot controls
         self.create_plot_controls()
+        print("After creation:")
+        print("Advanced button exists:", hasattr(self, 'advanced_settings_button'))
+        print("Series button exists:", hasattr(self, 'series_settings_button'))
 
         # Plot container
         self.plot_container = pn.Column(
@@ -101,11 +105,21 @@ class CyclePlotsTab(param.Parameterized):
             pn.pane.Markdown("Select an analysis method and click 'Run Analysis'")
         )
 
-        # Set up event handlers
-        self.setup_event_handlers()
-
         # Create the modal cards for advanced settings
         self.create_settings_cards()
+
+        # Print button info after settings cards
+        print("After settings cards:")
+        print("Advanced button exists:", hasattr(self, 'advanced_settings_button'))
+        print("Series button exists:", hasattr(self, 'series_settings_button'))
+        # Set up event handlers
+        self.setup_event_handlers()
+        # Print button info after handlers
+        print("After handlers:")
+        print("Advanced button exists:", hasattr(self, 'advanced_settings_button'))
+        print("Series button exists:", hasattr(self, 'series_settings_button'))
+
+
 
     # Method to update groups and colors
     def update_groups_and_colors(self):
@@ -214,9 +228,16 @@ class CyclePlotsTab(param.Parameterized):
                                             "plot_height", "plot_width",
                                             "use_datashader"])
 
+        print("Advanced button:", id(self.advanced_settings_button))
+        print("Series button:", id(self.series_settings_button))
+        print("Advanced button in _callbacks:", hasattr(self.advanced_settings_button, '_callbacks'))
+        print("Series button in _callbacks:", hasattr(self.series_settings_button, '_callbacks'))
+
         # Button click handlers
         self.advanced_settings_button.on_click(self.open_advanced_settings)
+
         self.series_settings_button.on_click(self.open_series_settings)
+
         self.export_png_button.on_click(self.export_png)
         self.export_svg_button.on_click(self.export_svg)
 
@@ -586,32 +607,6 @@ class CyclePlotsTab(param.Parameterized):
                 print(overlay)
             else:
                 overlay = main_plot_overlay
-            # # Add secondary y-axis if selected
-            # if self.y_axis_secondary is not None and self.y_axis_secondary != 'None':
-            #     # Create the hook for adding secondary axis
-            #     second_axis_hook = self.create_second_axis_hook()
-            #
-            #     # Determine if we need datashader
-            #     needs_datashader = self.use_datashader and len(self.selected_cell_ids) > 100
-            #
-            #     if needs_datashader:
-            #         # For datashader, we need to apply the hook after datashading
-            #         # First create the plot with datashader
-            #         main_plot = self.cycle_data.hvplot(
-            #             **plot_kwargs,
-            #             datashade=True,
-            #             rasterize=True
-            #         )
-            #
-            #         # Then apply the hook
-            #         main_plot = main_plot.opts(hooks=[second_axis_hook])
-            #     else:
-            #         # Without datashader, just apply hook directly
-            #         main_plot = self.cycle_data.hvplot(**plot_kwargs).opts(hooks=[second_axis_hook])
-            # else:
-            #     main_plot = self.cycle_data.hvplot(**plot_kwargs)
-
-            # Store the current plot for export
             self.current_plot = overlay
 
             # Render the plot
@@ -659,76 +654,150 @@ class CyclePlotsTab(param.Parameterized):
         self.advanced_settings_card.collapsed = True
 
     def open_series_settings(self, event):
-        """Open the series settings modal and populate with current series"""
+        """Open the series settings modal with a tabulator table"""
+        self.series_settings_card.collapsed = False
+        print("Opening series settings...")
         if self.cycle_data is None or self.cycle_data.is_empty():
             return
 
-        # Get unique values for the grouping column
-        unique_groups = self.cycle_data[self.group_by].unique().to_list()
+        # We can use the existing self.groups directly
+        # No need to call update_groups_and_colors() here
+        self.update_groups_and_colors()
 
-        # Create UI elements for each series
-        series_controls = []
+        # Create a dictionary to hold the settings data
+        settings_data = {
+            "group": [],
+            "visible": [],
+            "color": [],
+            "line_width": [],
+            "line_style": [],
+            "marker_size": [],
+            "marker_shape": [],
+            "opacity": [],
+            "y_axis": []  # Primary/Secondary
+        }
 
-        for group in unique_groups:
+        # Populate the settings data
+        for group in self.groups:
             group_str = str(group)
 
             # Create settings for this series if it doesn't exist
             if group_str not in self.series_settings:
                 self.series_settings[group_str] = {
-                    'visible': pn.widgets.Checkbox(name="Visible", value=True, width=100),
-                    'line_color': pn.widgets.ColorPicker(name="Line Color", width=100),
-                    'line_width': pn.widgets.IntSlider(name="Line Width", start=1, end=5, value=2, width=150),
-                    'line_style': pn.widgets.Select(
-                        name="Line Style",
-                        options=["solid", "dashed", "dotted", "dotdash"],
-                        value="solid",
-                        width=100
-                    ),
-                    'marker_size': pn.widgets.IntSlider(name="Marker Size", start=3, end=15, value=6, width=150),
-                    'marker_shape': pn.widgets.Select(
-                        name="Marker",
-                        options=["circle", "square", "triangle", "diamond", "cross", "x", "star"],
-                        value="circle",
-                        width=100
-                    ),
-                    'alpha': pn.widgets.FloatSlider(name="Opacity", start=0.1, end=1.0, value=0.8, step=0.1, width=150)
+                    'visible': True,
+                    'color': self.group_colors.get(group_str, None),  # Get color from existing group_colors
+                    'line_width': 2,
+                    'line_style': "solid",
+                    'marker_size': 6,
+                    'marker_shape': "circle",
+                    'opacity': 0.8,
+                    'y_axis': 'Primary'
                 }
 
-            # Create a card for this series
-            series_card = pn.Card(
-                pn.Column(
-                    pn.Row(self.series_settings[group_str]['visible'], self.series_settings[group_str]['line_color']),
-                    pn.Row(pn.pane.Markdown("Line:"), self.series_settings[group_str]['line_width'],
-                           self.series_settings[group_str]['line_style']),
-                    pn.Row(pn.pane.Markdown("Marker:"), self.series_settings[group_str]['marker_size'],
-                           self.series_settings[group_str]['marker_shape']),
-                    pn.Row(pn.pane.Markdown("Opacity:"), self.series_settings[group_str]['alpha'])
-                ),
-                title=f"{group_str}",
-                collapsed=True,
-                collapsible=True
-            )
+            # Add this group's settings to the data dictionary
+            settings = self.series_settings[group_str]
+            settings_data["group"].append(group_str)
+            settings_data["visible"].append(settings['visible'])
+            settings_data["color"].append(settings['color'])
+            settings_data["line_width"].append(settings['line_width'])
+            settings_data["line_style"].append(settings['line_style'])
+            settings_data["marker_size"].append(settings['marker_size'])
+            settings_data["marker_shape"].append(settings['marker_shape'])
+            settings_data["opacity"].append(settings['opacity'])
+            settings_data["y_axis"].append(settings['y_axis'])
 
-            series_controls.append(series_card)
+        # Create the table as before...
+            # Convert to Polars DataFrame
+        settings_df = pd.DataFrame(settings_data)
+        print(settings_df)
+
+        # Define the tabulator widget with editors for each column
+        settings_table = pn.widgets.Tabulator(
+            settings_df,  # Convert to pandas for Tabulator
+            height=400,
+            layout="fit_data_fill",
+            editors={
+                "visible": {"type": "tickCross"},
+                "color": {"type": "color"},
+                "line_width": {"type": "number", "min": 1, "max": 10, "step": 1},
+                "line_style": {"type": "list", "values": ["solid", "dashed", "dotted", "dotdash"]},
+                "marker_size": {"type": "number", "min": 1, "max": 20, "step": 1},
+                "marker_shape": {"type": "list",
+                                 "values": ["circle", "square", "triangle", "diamond", "cross", "x", "star"]},
+                "opacity": {"type": "number", "min": 0.1, "max": 1.0, "step": 0.1},
+                "y_axis": {"type": "list", "values": ["Primary", "Secondary"]}
+            },
+            formatters={
+                "visible": {"type": "tickCross"},
+                "color": {"type": "color"}
+            },
+            widths={
+                "group": 150,
+                "visible": 80,
+                "color": 80,
+                "line_width": 100,
+                "line_style": 120,
+                "marker_size": 100,
+                "marker_shape": 120,
+                "opacity": 100,
+                "y_axis": 100
+            },
+            titles={
+                "group": "Series",
+                "visible": "Visible",
+                "color": "Color",
+                "line_width": "Line Width",
+                "line_style": "Line Style",
+                "marker_size": "Marker Size",
+                "marker_shape": "Marker",
+                "opacity": "Opacity",
+                "y_axis": "Y-Axis"
+            },
+            configuration={"columnDefaults": {"editable": True}, "columns": [{"field": "group", "editable": False}]},
+            show_index=False
+        )
 
         # Add apply and cancel buttons
-        self.series_apply_button = pn.widgets.Button(name="Apply All", button_type="success", width=100)
+        self.series_apply_button = pn.widgets.Button(name="Apply Changes", button_type="success", width=150)
         self.series_cancel_button = pn.widgets.Button(name="Cancel", button_type="danger", width=100)
 
         self.series_apply_button.on_click(self.apply_series_settings)
         self.series_cancel_button.on_click(self.close_series_settings)
 
+        # Add reset button
+        self.reset_series_button = pn.widgets.Button(name="Reset to Default", button_type="default", width=150)
+        self.reset_series_button.on_click(self.reset_series_settings)
+
+        # Store the table for later access
+        self.series_settings_table = settings_table
+
         # Build the series settings card content
         self.series_settings_card.objects = [
             pn.Column(
                 pn.pane.Markdown("## Series Appearance Settings", styles={"text-align": "center"}),
-                pn.Column(*series_controls, scroll=True, height=400),
-                pn.Row(self.series_apply_button, self.series_cancel_button, align='end')
+                settings_table,
+                pn.Row(
+                    self.series_apply_button,
+                    self.reset_series_button,
+                    self.series_cancel_button,
+                    align='end'
+                )
             )
         ]
 
         # Show the series settings card
         self.series_settings_card.collapsed = False
+
+    def reset_series_settings(self, event):
+        """Reset series settings to default values"""
+        if not hasattr(self, 'series_settings_table'):
+            return
+
+        # Clear stored settings
+        self.series_settings = {}
+
+        # Reopen the settings dialog to regenerate defaults
+        self.open_series_settings(None)
 
     def close_series_settings(self, event):
         """Close the series settings modal without applying changes"""
@@ -736,8 +805,31 @@ class CyclePlotsTab(param.Parameterized):
 
     def apply_series_settings(self, event):
         """Apply the series settings and update the plot"""
-        # The series settings are already stored in self.series_settings
-        # and will be accessed when generating the plot
+        if not hasattr(self, 'series_settings_table'):
+            return
+
+        # Get the current table data
+        table_data = self.series_settings_table.value
+
+        # Update the series settings dictionary from the table
+        for _, row in table_data.iterrows():
+            group_str = str(row['group'])
+            self.series_settings[group_str] = {
+                'visible': row['visible'],
+                'color': row['color'],
+                'line_width': row['line_width'],
+                'line_style': row['line_style'],
+                'marker_size': row['marker_size'],
+                'marker_shape': row['marker_shape'],
+                'opacity': row['opacity'],
+                'y_axis': row['y_axis']
+            }
+
+            # Also update the group_colors dictionary for consistency
+            if row['visible'] and row['color']:
+                self.group_colors[group_str] = row['color']
+
+        # Update the plot with new settings
         self.update_plot()
         self.close_series_settings(None)
 
@@ -856,13 +948,13 @@ class CyclePlotsTab(param.Parameterized):
             self.plot_container,
             sizing_mode="stretch_width",
             width_policy="max",
-            min_width=600
+            min_width=300
         )
 
         settings_column = pn.Column(
             self.advanced_settings_card,
             self.series_settings_card,
-            width=350,
+            width=600,
             sizing_mode="fixed",
             styles = {'padding': '10px', 'border-left': '1px solid #ddd'}
         )
