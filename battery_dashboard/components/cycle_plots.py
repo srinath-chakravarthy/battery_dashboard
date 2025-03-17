@@ -1,339 +1,361 @@
 # battery_dashboard/components/cycle_plots.py
-# Main module for Cycle Plots
 import panel as pn
 import polars as pl
-import plotly.graph_objects as go
 import param
+import holoviews as hv
+import hvplot.polars
+from bokeh.palettes import Category10, Category20
+from bokeh.models import HoverTool, CrosshairTool, Span, Band
 from ..data.loaders import get_cycle_data
-# Modular class for Cycle Plots Tab
+
+# Configure HoloViews to use Bokeh
+hv.extension('bokeh')
+
+
 class CyclePlotsTab(param.Parameterized):
+    """Enhanced cycle plots tab with HvPlot and Bokeh backend."""
+
+    # Parameters for reactive updates
+    selected_cell_ids = param.List(default=[], doc="Selected cell IDs")
+    selected_cell_metadata = param.Parameter(default=None, doc="Full data for selected rows")
+    current_plot = param.Parameter(default=None, doc="Current plot object")
+
+    # Active tab selection for analysis types
+    active_tab = param.Selector(default="basic", objects=["basic", "analysis", "model"],
+                                doc="Currently active analysis tab")
+
+    # Analysis method selection
+    analysis_method = param.Selector(
+        default="capacity_retention",
+        objects=["capacity_retention", "coulombic_efficiency", "knee_point", "differential_capacity"],
+        doc="Analysis method to apply to the data"
+    )
+
+    # Plot configuration parameters
+    plot_type = param.Selector(
+        default="line",
+        objects=["line", "scatter", "area", "step", "bar"],
+        doc="Type of plot to display"
+    )
+
+    x_axis = param.Selector(
+        default="regular_cycle_number",
+        objects=["regular_cycle_number"],
+        doc="X-axis column"
+    )
+
+    y_axis = param.Selector(
+        default="discharge_capacity",
+        objects=["discharge_capacity"],
+        doc="Y-axis column"
+    )
+
+    y_axis_secondary = param.Selector(
+        default=None,
+        objects=[None],
+        doc="Secondary Y-axis column"
+    )
+
+    group_by = param.Selector(
+        default="cell_id",
+        objects=["cell_id"],
+        doc="Column to group data by"
+    )
+
+    color_theme = param.Selector(
+        default="default",
+        objects=["default", "Category10", "Category20", "viridis", "plasma", "inferno", "magma", "cividis"],
+        doc="Color theme for plot"
+    )
+
+    # Chart sizing
+    plot_height = param.Integer(default=600, bounds=(300, 1200), doc="Plot height in pixels")
+    plot_width = param.Integer(default=800, bounds=(400, 2000), doc="Plot width in pixels")
+
+    # Advanced options
+    use_datashader = param.Boolean(default=True, doc="Use datashader for rendering large datasets")
+    show_grid = param.Boolean(default=True, doc="Show grid lines")
+    show_legend = param.Boolean(default=True, doc="Show legend")
+    legend_position = param.Selector(
+        default="right",
+        objects=["right", "left", "top", "bottom", "top_left", "top_right", "bottom_left", "bottom_right"],
+        doc="Legend position"
+    )
+
     def __init__(self, **params):
         super().__init__(**params)
-        self.selected_cell_ids = []
-        self.selected_cell_metadata = None
         self.cycle_data = None
+        self.groups = []
+        self.group_colors = {}
 
-        self.color_theme = pn.widgets.Select(
-            name="Color Theme",
-            options=["plotly", "plotly_white", "plotly_dark", "ggplot2",
-                     "seaborn", "simple_white", "none"],
-            value="plotly"
+        # Create UI elements for the plot controls
+        self.create_plot_controls()
+
+        # Plot container
+        self.plot_container = pn.Column(
+            pn.pane.Markdown("No cells selected. Please select cells in the Cell Selector tab.")
         )
 
-        self.x_axis = pn.widgets.Select(
-            name="X-Axis",
-            options=["regular_cycle_number"],
-            value="regular_cycle_number"
+        # Analysis results container
+        self.analysis_container = pn.Column(
+            pn.pane.Markdown("Select an analysis method and click 'Run Analysis'")
         )
 
-        self.y_axis = pn.widgets.Select(
-            name="Y-Axis",
-            options=["discharge_capacity", "charge_capacity",
-                     "coulombic_efficiency", "energy_efficiency"],
-            value="discharge_capacity"
-        )
-
-        # New grouping widget
-        self.group_by = pn.widgets.Select(
-            name="Group By",
-            options=["cell_id"],
-            value="cell_id"
-        )
-
-        self.create_plot_settings_ui_elements()
-
+        # Set up event handlers
         self.setup_event_handlers()
 
-        self.cycle_plot_container = pn.Column("No cells selected. Please select cells in the Cell Selector tab.")
+        # Create the modal cards for advanced settings
+        self.create_settings_cards()
 
-    def setup_event_handlers(self):
-        """Set up event handlers for plot controls"""
-        # Existing control handlers
-        self.color_theme.param.watch(self.update_plots, "value")
-        self.x_axis.param.watch(self.update_plots, "value")
-        self.y_axis.param.watch(self.update_plots, "value")
-        self.group_by.param.watch(self.update_plots, "value")
-
-        # New control handlers
-        self.plot_type.param.watch(self.update_plots, "value")
-
-        # For series settings
-        self.series_apply_button = pn.widgets.Button(name="Apply", button_type="success", width=100)
-        self.series_cancel_button = pn.widgets.Button(name="Cancel", button_type="danger", width=100)
-
-        self.series_apply_button.on_click(self.apply_series_settings)
-        self.series_cancel_button.on_click(self.close_series_settings)
-
-        # For advanced settings
-        self.advanced_apply_button = pn.widgets.Button(name="Apply", button_type="success", width=100)
-        self.advanced_cancel_button = pn.widgets.Button(name="Cancel", button_type="danger", width=100)
-
-        self.advanced_apply_button.on_click(self.apply_advanced_settings)
-        self.advanced_cancel_button.on_click(self.close_advanced_settings)
-
-        # Also update the card collapsed state event handlers if needed
-        self.series_settings_card.param.watch(self._update_series_settings_card, "collapsed")
-        # self.advanced_settings_card.param.watch(self._update_advanced_settings_card, "collapsed")
-
-
-    def open_series_settings(self, event):
-        """Open the series settings modal"""
-        self._update_series_settings_card()
-        self.series_settings_card.open = True
-
-    def close_series_settings(self, event):
-        """Close the series settings modal without applying changes"""
-        self.series_settings_card.open = False
-
-    def apply_series_settings(self):
-        # Update settings from current values
-        self.series_settings = {
-            'plot_type': self.plot_type.value,
-            'group_by': self.group_by.value,
-            'color_theme': self.color_theme.value,
-            'x_axis': self.x_axis.value,
-            'y_axis': self.y_axis.value
-        }
-
-        # Update the card display
-        self._update_series_settings_card()
-
-        # This is the critical line that was missing - update the plots
-        self.update_plots()
-
-        # Close the settings card
-        self.close_series_settings()
-
-    def open_advanced_settings(self, event):
-        """Open the advanced settings modal"""
-        # Pre-populate values from current plot if available
-        if hasattr(self, 'x_axis') and self.x_axis.value:
-            self.advanced_settings['x_axis_title'].value = self.x_axis.value.replace('_', ' ').title()
-        if hasattr(self, 'y_axis') and self.y_axis.value:
-            self.advanced_settings['y_axis_title'].value = self.y_axis.value.replace('_', ' ').title()
-
-        self.advanced_settings_card.open = True
-
-    def close_advanced_settings(self, event):
-        """Close the advanced settings modal without applying changes"""
-        self.advanced_settings_card.open = False
-
-    def apply_advanced_settings(self, event):
-        """Apply advanced settings and update the plot"""
-        self.advanced_settings_card.open = False
-        self.update_plots()
-
-    def create_plot_settings_ui_elements(self):
-        # Plot type control (new)
-        self.plot_type = pn.widgets.Select(
-            name="Plot Type",
-            options=["scatter", "line", "line+markers", "bar"],
-            value="line+markers"
+    # Method to update groups and colors
+    def update_groups_and_colors(self):
+        # Only compute groups if they're not already set or grouping column changed
+        needs_group_update = (
+                not self.groups or
+                self._last_group_by != self.group_by or
+                self._last_data_id != id(self.cycle_data)
         )
 
-        # Buttons for advanced controls
-        self.series_settings_button = pn.widgets.Button(
-            name="Edit Series Settings",
-            button_type="primary",
-            width=150
+        if needs_group_update and not self.cycle_data.is_empty():
+            # Store the current grouping for future comparison
+            self._last_group_by = self.group_by
+            self._last_data_id = id(self.cycle_data)
+
+            # Get unique groups
+            self.groups = self.cycle_data[self.group_by].unique().to_list()
+
+            # Reset color mapping
+            self.group_colors = {}
+
+        # Update colors if needed
+        if self.groups and (needs_group_update or self._last_color_theme != self.color_theme):
+            self._last_color_theme = self.color_theme
+
+            # Get color palette
+            if self.color_theme == 'Category10':
+                cmap = Category10[10]
+            elif self.color_theme == 'Category20':
+                cmap = Category20[20]
+            else:
+                cmap = self.color_theme if self.color_theme != 'default' else Category10[10]
+
+            # Assign colors to groups
+            for i, group in enumerate(self.groups):
+                group_str = str(group)
+                # Only set color if it isn't already customized via series settings
+                if group_str not in self.group_colors:
+                    if isinstance(cmap, list):
+                        self.group_colors[group_str] = cmap[i % len(cmap)]
+                    else:
+                        # Default fallback
+                        self.group_colors[group_str] = Category10[10][i % 10]
+
+    def create_plot_controls(self):
+        """Create the UI elements for plot controls"""
+        # Basic controls (will always be visible in sidebar)
+        self.axis_settings_pane = pn.Column(
+            pn.pane.Markdown("## Plot Settings", styles={"margin-bottom": "5px"}),
+            pn.widgets.Select.from_param(self.param.x_axis, name="X-Axis", width=200),
+            pn.widgets.Select.from_param(self.param.y_axis, name="Y-Axis", width=200),
+            pn.widgets.Select.from_param(self.param.y_axis_secondary, name="Secondary Y-Axis", width=200),
+            pn.widgets.Select.from_param(self.param.plot_type, name="Plot Type", width=200),
+            pn.pane.Markdown("## Grouping", styles={"margin-bottom": "5px"}),
+            pn.widgets.Select.from_param(self.param.group_by, name="Group By", width=200),
+            width=250
         )
 
+        # Advanced settings buttons
         self.advanced_settings_button = pn.widgets.Button(
             name="Advanced Plot Settings",
             button_type="primary",
-            width=150
-        )
-        # Create modals for advanced settings
-        self.series_settings_card = self._create_series_settings_card()
-        self.advanced_settings_card = self._create_advanced_settings_card()
-
-    def _create_series_settings_card(self):
-        """Create a modal dialog for series-specific settings"""
-        # This will be dynamically populated when opened
-        self.series_settings = {}
-
-        # Create an empty placeholder that will be filled when the modal is opened
-        series_controls = pn.Column(pn.pane.Markdown("## Series Settings"))
-
-        # Create the card
-        card = pn.Card(
-            series_controls,
-            title="Series Settings",
-            collapsed=True,
-            collapsible=True,
-            header_background="#e0e0e0"
+            width=200,
+            icon="gear"
         )
 
-        # Add callback for when card is expanded
-        card.param.watch(self._update_series_settings_card, "collapsed")
+        self.series_settings_button = pn.widgets.Button(
+            name="Series Settings",
+            button_type="primary",
+            width=200,
+            icon="palette"
+        )
 
-        return card
+        # Export/Download buttons
+        self.export_png_button = pn.widgets.Button(
+            name="Export as PNG",
+            button_type="success",
+            width=150,
+            icon="download"
+        )
 
-    def _update_series_settings_card(self, event=None):
-        """Update the series settings card with current series data"""
+        self.export_svg_button = pn.widgets.Button(
+            name="Export as SVG",
+            button_type="success",
+            width=150,
+            icon="download"
+        )
 
-        if event and event.new:
-            return
-        if not hasattr(self, 'cycle_data') or self.cycle_data.is_empty():
-            return
+        # Action buttons container
+        self.action_buttons = pn.Column(
+            pn.pane.Markdown("## Actions", styles={"margin-bottom": "5px"}),
+            pn.Row(self.advanced_settings_button, margin=(0, 0, 5, 0)),
+            pn.Row(self.series_settings_button, margin=(0, 0, 5, 0)),
+            pn.pane.Markdown("## Export", styles={"margin-bottom": "5px"}),
+            pn.Row(self.export_png_button, self.export_svg_button),
+            width=250
+        )
 
-        # Get the unique series based on the current group_by selection
-        unique_groups = self.cycle_data[self.group_by.value].unique().to_list()
+    def setup_event_handlers(self):
+        """Set up event handlers for the UI elements"""
+        # Watch parameters for updating the plot
+        self.param.watch(self.update_plot, ["plot_type", "x_axis", "y_axis",
+                                            "y_axis_secondary", "group_by",
+                                            "color_theme", "show_grid",
+                                            "show_legend", "legend_position",
+                                            "plot_height", "plot_width",
+                                            "use_datashader"])
 
-        # Create a control panel for each series
-        series_panels = []
-        for group in unique_groups:
-            # Create a series-specific control set if it doesn't exist
-            if str(group) not in self.series_settings:
-                self.series_settings[str(group)] = {
-                    'visible': pn.widgets.Checkbox(name="Visible", value=True),
-                    'line_style': pn.widgets.Select(
-                        name="Line Style",
-                        options=["solid", "dash", "dot", "dashdot", "none"],
-                        value="solid"
-                    ),
-                    'line_width': pn.widgets.IntSlider(name="Line Width", start=0, end=10, value=2),
-                    'marker_style': pn.widgets.Select(
-                        name="Marker",
-                        options=["circle", "square", "diamond", "triangle-up", "cross", "x", "none"],
-                        value="circle"
-                    ),
-                    'marker_size': pn.widgets.IntSlider(name="Marker Size", start=2, end=20, value=6),
-                    'color': pn.widgets.ColorPicker(name="Color")
-                }
+        # Button click handlers
+        self.advanced_settings_button.on_click(self.open_advanced_settings)
+        self.series_settings_button.on_click(self.open_series_settings)
+        self.export_png_button.on_click(self.export_png)
+        self.export_svg_button.on_click(self.export_svg)
 
-            # Create a panel for this series
-            panel = pn.Column(
-                pn.pane.Markdown(f"### {group}"),
-                *list(self.series_settings[str(group)].values()),
-                styles={"background": "#f9f9f9", "padding": "10px", "border-radius": "5px", "margin-bottom": "10px"}
+
+    def create_settings_cards(self):
+        """Create the modal cards for advanced settings"""
+        # Advanced settings card
+        self.advanced_settings_widgets = {
+            'plot_title': pn.widgets.TextInput(name="Plot Title", placeholder="Enter plot title", width=250),
+            'x_axis_label': pn.widgets.TextInput(name="X-Axis Label", width=250),
+            'y_axis_label': pn.widgets.TextInput(name="Y-Axis Label", width=250),
+            'y_axis_secondary_label': pn.widgets.TextInput(name="Secondary Y-Axis Label", width=250),
+            'x_axis_type': pn.widgets.Select(name="X-Axis Type", options=["linear", "log"], value="linear", width=200),
+            'y_axis_type': pn.widgets.Select(name="Y-Axis Type", options=["linear", "log"], value="linear", width=200),
+            'y_axis_secondary_type': pn.widgets.Select(name="Secondary Y-Axis Type", options=["linear", "log"],
+                                                       value="linear", width=200),
+            'x_axis_min': pn.widgets.NumberInput(name="X-Axis Min", value=None, step=0.5,width=120),
+            'x_axis_max': pn.widgets.NumberInput(name="X-Axis Max", value=None, step=0.5,width=120),
+            'y_axis_min': pn.widgets.NumberInput(name="Y-Axis Min", value=None, step=0.1,width=120),
+            'y_axis_max': pn.widgets.NumberInput(name="Y-Axis Max", value=None, step=0.1,width=120),
+            'y_axis_secondary_min': pn.widgets.NumberInput(name="Secondary Y-Axis Min", step=0.1,value=None, width=120),
+            'y_axis_secondary_max': pn.widgets.NumberInput(name="Secondary Y-Axis Max", step=0.1,value=None, width=120),
+            'show_grid': pn.widgets.Checkbox.from_param(self.param.show_grid),
+            'grid_color': pn.widgets.ColorPicker(name="Grid Color", value="#e0e0e0", width=100),
+            'background_color': pn.widgets.ColorPicker(name="Background Color", value="#ffffff", width=100),
+            'show_legend': pn.widgets.Checkbox.from_param(self.param.show_legend),
+            'legend_position': pn.widgets.Select.from_param(self.param.legend_position, width=200),
+            'plot_height': pn.widgets.IntSlider.from_param(self.param.plot_height, width=200),
+            'plot_width': pn.widgets.IntSlider.from_param(self.param.plot_width, width=200),
+            'use_datashader': pn.widgets.Checkbox.from_param(self.param.use_datashader),
+            'tools': pn.widgets.MultiChoice(
+                name="Interactive Tools",
+                options=["pan", "wheel_zoom", "box_zoom", "box_select", "lasso_select", "crosshair", "hover", "reset"],
+                value=["pan", "wheel_zoom", "box_zoom", "reset", "hover"],
+                width=250
             )
-            series_panels.append(panel)
-
-            # Add buttons at the bottom
-            button_row = pn.Row(
-                self.series_apply_button,
-                self.series_cancel_button,
-                align="end"
-            )
-
-        # Update the modal content
-        self.series_settings_card.objects = [
-            pn.pane.Markdown("## Series Settings", styles={"text-align": "center"}),
-            pn.Column(*series_panels, scroll=True, height=400),
-            button_row
-        ]
-
-    def _create_advanced_settings_card(self):
-        """Create a modal dialog for advanced plot settings"""
-        # Create controls for advanced settings
-        self.advanced_settings = {
-            # Axis settings
-            'x_axis_type': pn.widgets.Select(name="X-Axis Type", options=["linear", "log"], value="linear"),
-            'y_axis_type': pn.widgets.Select(name="Y-Axis Type", options=["linear", "log"], value="linear"),
-            'x_axis_min': pn.widgets.NumberInput(name="X-Axis Min", value=None),
-            'x_axis_max': pn.widgets.NumberInput(name="X-Axis Max", value=None),
-            'y_axis_min': pn.widgets.NumberInput(name="Y-Axis Min", value=None),
-            'y_axis_max': pn.widgets.NumberInput(name="Y-Axis Max", value=None),
-
-            # Grid settings
-            'show_grid': pn.widgets.Checkbox(name="Show Grid", value=True),
-            'grid_color': pn.widgets.ColorPicker(name="Grid Color", value="#e0e0e0"),
-
-            # Title and labels
-            'plot_title': pn.widgets.TextInput(name="Plot Title", placeholder="Enter plot title"),
-            'x_axis_title': pn.widgets.TextInput(name="X-Axis Title"),
-            'y_axis_title': pn.widgets.TextInput(name="Y-Axis Title"),
-            'title_font_size': pn.widgets.IntSlider(name="Title Font Size", start=10, end=30, value=16),
-            'axis_font_size': pn.widgets.IntSlider(name="Axis Font Size", start=8, end=20, value=12),
-
-            # Legend settings
-            'show_legend': pn.widgets.Checkbox(name="Show Legend", value=True),
-            'legend_position': pn.widgets.Select(
-                name="Legend Position",
-                options=["top left", "top center", "top right", "center left",
-                         "center right", "bottom left", "bottom center", "bottom right"],
-                value="top right"
-            ),
-
-            # Plot size
-            'plot_height': pn.widgets.IntSlider(name="Plot Height", start=300, end=1200, value=600),
-            'plot_width': pn.widgets.IntSlider(name="Plot Width", start=400, end=1600, value=800)
         }
 
-        # Organize controls into tabs
-        axis_tab = pn.Column(
-            pn.Row(self.advanced_settings['x_axis_type'], self.advanced_settings['y_axis_type']),
-            pn.Row(self.advanced_settings['x_axis_min'], self.advanced_settings['x_axis_max']),
-            pn.Row(self.advanced_settings['y_axis_min'], self.advanced_settings['y_axis_max']),
-            pn.Row(self.advanced_settings['show_grid'], self.advanced_settings['grid_color'])
+        # Organize into tabs for the advanced settings
+        advanced_axes_tab = pn.Column(
+            pn.Row(self.advanced_settings_widgets['x_axis_label'], self.advanced_settings_widgets['x_axis_type']),
+            pn.Row(self.advanced_settings_widgets['x_axis_min'], self.advanced_settings_widgets['x_axis_max']),
+            pn.Row(self.advanced_settings_widgets['y_axis_label'], self.advanced_settings_widgets['y_axis_type']),
+            pn.Row(self.advanced_settings_widgets['y_axis_min'], self.advanced_settings_widgets['y_axis_max']),
+            pn.Row(self.advanced_settings_widgets['y_axis_secondary_label'],
+                   self.advanced_settings_widgets['y_axis_secondary_type']),
+            pn.Row(self.advanced_settings_widgets['y_axis_secondary_min'],
+                   self.advanced_settings_widgets['y_axis_secondary_max'])
         )
 
-        labels_tab = pn.Column(
-            self.advanced_settings['plot_title'],
-            self.advanced_settings['x_axis_title'],
-            self.advanced_settings['y_axis_title'],
-            pn.Row(self.advanced_settings['title_font_size'], self.advanced_settings['axis_font_size'])
+        advanced_appearance_tab = pn.Column(
+            pn.Row(self.advanced_settings_widgets['plot_title']),
+            pn.Row(self.advanced_settings_widgets['show_grid'], self.advanced_settings_widgets['grid_color']),
+            pn.Row(pn.pane.Markdown("Background:"), self.advanced_settings_widgets['background_color']),
+            pn.Row(self.advanced_settings_widgets['show_legend'], self.advanced_settings_widgets['legend_position']),
+            pn.Row(self.advanced_settings_widgets['plot_height'], self.advanced_settings_widgets['plot_width'])
         )
 
-        legend_tab = pn.Column(
-            pn.Row(self.advanced_settings['show_legend']),
-            pn.Row(self.advanced_settings['legend_position'])
+        advanced_interaction_tab = pn.Column(
+            pn.Row(self.advanced_settings_widgets['use_datashader']),
+            pn.Row(self.advanced_settings_widgets['tools'])
         )
 
-        size_tab = pn.Column(
-            pn.Row(self.advanced_settings['plot_height'], self.advanced_settings['plot_width'])
+        # Apply and cancel buttons
+        self.advanced_apply_button = pn.widgets.Button(name="Apply", button_type="success", width=100)
+        self.advanced_cancel_button = pn.widgets.Button(name="Cancel", button_type="danger", width=100)
+        self.advanced_apply_button.on_click(self.apply_advanced_settings)
+        self.advanced_cancel_button.on_click(self.close_advanced_settings)
+
+        # Create tabs for advanced settings
+        advanced_settings_tabs = pn.Tabs(
+            ('Axes', advanced_axes_tab),
+            ('Appearance', advanced_appearance_tab),
+            ('Interaction', advanced_interaction_tab)
         )
 
-        # Create tabs for the different setting categories
-        settings_tabs = pn.Tabs(
-            ('Axes', axis_tab),
-            ('Labels', labels_tab),
-            ('Legend', legend_tab),
-            ('Size', size_tab)
-        )
-
-        # Create the card
-        card = pn.Card(
-            settings_tabs,
+        # Create the modal
+        self.advanced_settings_card = pn.Card(
+            pn.Column(
+                advanced_settings_tabs,
+                pn.Row(self.advanced_apply_button, self.advanced_cancel_button, align='end')
+            ),
             title="Advanced Plot Settings",
             collapsed=True,
             collapsible=True,
-            header_background="#e0e0e0"
+            header_background="#3498db",
+            header_color="white"
         )
 
-        return card
+        # Series settings card will be created dynamically when opened
+        self.series_settings_card = pn.Card(
+            pn.pane.Markdown("Series settings will appear here..."),
+            title="Series Settings",
+            collapsed=True,
+            collapsible=True,
+            header_background="#3498db",
+            header_color="white"
+        )
+
+        # Store original series settings
+        self.series_settings = {}
 
     def update_selection(self, cell_ids, cell_data):
         """Update the selected cell IDs and data."""
         self.selected_cell_ids = cell_ids
         self.selected_cell_metadata = cell_data
+
         if not cell_ids:
-            self.cycle_plot_container.append("No cells selected. Please select cells in the Cell Selector tab.")
+            self.cycle_data = None
+            self.plot_container.clear()
+            self.plot_container.append(pn.pane.Markdown(
+                "No cells selected. Please select cells in the Cell Selector tab.",
+                styles={"color": "#666", "font-style": "italic"}
+            ))
             return
 
-        self.cycle_plot_container.append(pn.pane.Markdown("Loading cycle data..."))
+        # Show loading indicator
+        self.plot_container.clear()
+        self.plot_container.append(pn.indicators.Progress(active=True, value=50, width=400))
+        self.plot_container.append(pn.pane.Markdown("Loading cycle data...", styles={"color": "#333"}))
+
+        # Fetch cycle data
         self.cycle_data = get_cycle_data(cell_ids)
+        # print(self.cycle_data.shape)
+        # print(self.cycle_data.head())
 
-        if self.cycle_data.is_empty():
-            self.cycle_plot_container.clear()
-            self.cycle_plot_container.append("No cycle data available for the selected cells.")
+        if self.cycle_data is None or self.cycle_data.is_empty():
+            self.plot_container.clear()
+            self.plot_container.append(pn.pane.Markdown(
+                "No cycle data available for the selected cells.",
+                styles={"color": "red", "font-weight": "bold"}
+            ))
             return
 
-        if not hasattr(self, 'cycle_data') or self.cycle_data.is_empty():
-            self.cycle_plot_container.append("No cycle data available. Please select cells first.")
-            return
-        cycle_data = self.cycle_data
-
-        # Merge group information if available
+        # Merge with cell metadata if available
         if self.selected_cell_metadata is not None and not self.selected_cell_metadata.is_empty():
-            # Merge with cell metadata - always merge all metadata columns
-            cell_metadata = self.selected_cell_metadata
-
-            # Always merge all metadata to ensure we have all potential grouping columns available
-            # First, identify which columns already exist in cycle_data to avoid duplicates
-            existing_cols = set(cycle_data.columns)
-            metadata_cols = [col for col in cell_metadata.columns if col != 'cell_id']
+            # Identify which columns already exist in cycle_data to avoid duplicates
+            existing_cols = set(self.cycle_data.columns)
+            metadata_cols = [col for col in self.selected_cell_metadata.columns if col != 'cell_id']
 
             # Select only columns from metadata that don't already exist in cycle_data
             unique_metadata_cols = [col for col in metadata_cols if col not in existing_cols]
@@ -341,29 +363,26 @@ class CyclePlotsTab(param.Parameterized):
             # If there are unique columns to merge, perform the join
             if unique_metadata_cols:
                 cols_to_select = ['cell_id'] + unique_metadata_cols
-                merged_df = cycle_data.join(
-                    cell_metadata.select(cols_to_select),
+                self.cycle_data = self.cycle_data.join(
+                    self.selected_cell_metadata.select(cols_to_select),
                     on='cell_id',
-                    how='left')
-            else:
-                merged_df = cycle_data
-        else:
-            merged_df = self.cycle_data
+                    how='left'
+                )
 
-        print(merged_df.columns)
-        if 'total_active_mass_g' in merged_df.columns:
-            print("total Active mass found")
-            # Find all columns that end with "capacity" or "energy" but don't already have "_specific_mAh_g" or "_specific_Wh_g"
-            capacity_cols = [col for col in merged_df.columns
-                             if col.endswith('capacity') and not col.endswith('_specific_mAh_g')]
-            energy_cols = [col for col in merged_df.columns
-                           if col.endswith('energy') and not col.endswith('_specific_Wh_g')]
+        # Add specific capacity metrics if active mass is available
+        if 'total_active_mass_g' in self.cycle_data.columns:
+            # Find capacity and energy columns
+            capacity_cols = [col for col in self.cycle_data.columns
+                             if 'capacity' in col.lower() and not '_specific_mAh_g' in col]
+            energy_cols = [col for col in self.cycle_data.columns
+                           if 'energy' in col.lower() and not '_specific_Wh_g' in col]
 
-            specific_value_exprs = []
+            # Create specific capacity and energy expressions
+            specific_exprs = []
 
             # Add expressions for capacity columns (convert to mAh/g)
             for col in capacity_cols:
-                specific_value_exprs.append(
+                specific_exprs.append(
                     (
                         pl.when(pl.col('total_active_mass_g') > 0)
                         .then(1000 * pl.col(col) / pl.col('total_active_mass_g'))
@@ -373,249 +392,487 @@ class CyclePlotsTab(param.Parameterized):
 
             # Add expressions for energy columns (convert to Wh/g)
             for col in energy_cols:
-                specific_value_exprs.append(
+                specific_exprs.append(
                     (
                         pl.when(pl.col('total_active_mass_g') > 0)
                         .then(pl.col(col) / pl.col('total_active_mass_g'))
                         .otherwise(None)
                     ).alias(f"{col}_specific_Wh_g")
                 )
-            print("Found columns with capacity")
-            if specific_value_exprs:
-                print("Adding Specific capacity and energy to to cols")
-                merged_df = merged_df.with_columns(specific_value_exprs)
-        self.cycle_data = merged_df
 
-        # Update axis options based on available columns
-        all_numeric_cols = [col for col in self.cycle_data.columns
-                        if self.cycle_data[col].dtype in [pl.Float32, pl.Float64, pl.Int32, pl.Int64]]
-        # Get the list of columns that come from cell_metadata
-        cell_metadata_columns = set(
-            self.selected_cell_metadata.columns) if self.selected_cell_metadata is not None else set()
+            # Apply the expressions to add the new columns
+            if specific_exprs:
+                self.cycle_data = self.cycle_data.with_columns(specific_exprs)
 
-        numeric_cols = [col for col in all_numeric_cols
-                        if (col not in cell_metadata_columns)]
+        # Update available columns for dropdown selectors
+        self.update_column_options()
 
-        # Find categorical columns
-        categorical_cols = [
-            col for col in cell_data.columns
-            if col not in ['cell_id', 'cell_name'] and
-               cell_data[col].dtype in [pl.Utf8, pl.String]
-        ]
+        # Generate the initial plot
+        self.update_plot()
 
-        # Ensure 'cell_id' and 'cell_name' are always first
-        group_options = ["cell_id", "cell_name"] + categorical_cols
-
-        # Update group options dynamically
-        current_group = self.group_by.value
-        self.group_by.options = group_options
-
-        if current_group not in group_options:
-            self.group_by.value = "cell_id"
-
-        # Keep current selection if possible
-        current_x = self.x_axis.value if self.x_axis.value in numeric_cols else "regular_cycle_number"
-        current_y = self.y_axis.value if self.y_axis.value in numeric_cols else "discharge_capacity"
-
-        self.x_axis.options = numeric_cols
-        self.x_axis.value = current_x
-
-        self.y_axis.options = numeric_cols
-        self.y_axis.value = current_y
-
-
-        # Now update the plots with the loaded data
-        self.update_plots()
-
-    def update_plots(self, event=None):
-        """Update plots based on the current selection and all plot settings"""
-        self.cycle_plot_container.clear()
-
-        if not hasattr(self, 'cycle_data') or self.cycle_data.is_empty():
-            self.cycle_plot_container.append("No cycle data available. Please select cells first.")
+    def update_column_options(self):
+        """Update the available column options for dropdown selectors"""
+        if self.cycle_data is None or self.cycle_data.is_empty():
             return
 
-        # Create plotly figure
-        fig = go.Figure()
+        # Get all numeric columns for axes
+        numeric_cols = [col for col in self.cycle_data.columns
+                        if self.cycle_data[col].dtype in [pl.Float32, pl.Float64, pl.Int32, pl.Int64]]
 
-        # Get unique groups for filtering
-        unique_groups = self.cycle_data[self.group_by.value].unique().to_numpy()
+        # Get categorical columns for grouping
+        categorical_cols = [
+            col for col in self.cycle_data.columns
+            if (col not in ['cell_id', 'cell_name'] and
+                self.cycle_data[col].dtype in [pl.Utf8, pl.String]) or
+               col in ['cell_id', 'cell_name']
+        ]
 
-        # Determine plot mode based on plot type
-        mode_mapping = {
-            "scatter": "markers",
-            "line": "lines",
-            "line+markers": "lines+markers",
-            "bar": "markers"  # Bar will be handled separately
+        # Ensure 'cell_id' and 'cell_name' are always first in group options
+        if 'cell_id' in self.cycle_data.columns and 'cell_id' not in categorical_cols:
+            categorical_cols = ['cell_id'] + categorical_cols
+        if 'cell_name' in self.cycle_data.columns and 'cell_name' not in categorical_cols:
+            categorical_cols = ['cell_name'] + categorical_cols
+
+        # Update options for selectors
+        self.param.x_axis.objects = sorted(numeric_cols)
+        self.param.y_axis.objects = sorted(numeric_cols)
+
+        # For secondary y-axis, add None option
+        secondary_options = [None] + sorted(numeric_cols)
+        self.param.y_axis_secondary.objects = secondary_options
+
+        # Update grouping options
+        self.param.group_by.objects = sorted(categorical_cols)
+
+        # Try to keep current selections if possible
+        if self.x_axis not in numeric_cols:
+            self.x_axis = 'regular_cycle_number' if 'regular_cycle_number' in numeric_cols else numeric_cols[0]
+
+        if self.y_axis not in numeric_cols:
+            capacity_cols = [col for col in numeric_cols if 'discharge_capacity' in col]
+            self.y_axis = capacity_cols[0] if capacity_cols else numeric_cols[0]
+
+        if self.group_by not in categorical_cols:
+            self.group_by = 'cell_id' if 'cell_id' in categorical_cols else categorical_cols[0]
+
+    def create_hover_tool(self, tooltips=None):
+        """Create a custom hover tool with the given tooltips"""
+        if tooltips is None:
+            # Default tooltips
+            tooltips = [
+                ('Group', '@{' + self.group_by + '}'),
+                ('Cycle', '@{' + self.x_axis + '}{0}'),
+                (self.y_axis, '@{' + self.y_axis + '}{0.00}')
+            ]
+
+            # Add secondary y-axis if it exists
+            if self.y_axis_secondary is not None:
+                tooltips.append((self.y_axis_secondary, '@{' + self.y_axis_secondary + '}{0.00}'))
+
+        return HoverTool(tooltips=tooltips)
+
+
+    def update_plot(self, event=None):
+        """Update the plot based on current settings"""
+        self.plot_container.clear()
+
+        if self.cycle_data is None or self.cycle_data.is_empty():
+            self.plot_container.append(pn.pane.Markdown(
+                "No cycle data available. Please select cells in the Cell Selector tab.",
+                styles={"color": "#666", "font-style": "italic"}
+            ))
+            return
+
+        # Get color palette based on theme
+        if self.color_theme == 'Category10':
+            cmap = Category10[10]
+        elif self.color_theme == 'Category20':
+            cmap = Category20[20]
+        else:
+            cmap = self.color_theme if self.color_theme != 'default' else None
+
+        # Update groups and colors first
+        self.update_groups_and_colors()
+        # Get advanced settings
+        adv = self.advanced_settings_widgets
+
+        # Create base plot kwargs
+        plot_kwargs = {
+            'x': self.x_axis,
+            'y': self.y_axis,
+            'by': self.group_by,
+            'kind': self.plot_type,
+            'height': self.plot_height,
+            'width': self.plot_width,
+            'cmap': cmap,
+            'grid': self.show_grid,
+            'legend': self.show_legend,
+            'logx': adv['x_axis_type'].value == 'log',
+            'logy': adv['y_axis_type'].value == 'log'
         }
-        plot_mode = mode_mapping.get(self.plot_type.value, "lines+markers")
 
-        # Create a trace for each group
+        # Set axis labels
+        plot_kwargs['xlabel'] = adv['x_axis_label'].value or self.x_axis.replace('_', ' ').title()
+        plot_kwargs['ylabel'] = adv['y_axis_label'].value or self.y_axis.replace('_', ' ').title()
+
+        # Set title if provided
+        if adv['plot_title'].value:
+            plot_kwargs['title'] = adv['plot_title'].value
+
+        # Only set limits if user has explicitly set them
+        if adv['x_axis_min'].value is not None and adv['x_axis_max'].value is not None:
+            plot_kwargs['xlim'] = (adv['x_axis_min'].value, adv['x_axis_max'].value)
+
+        if adv['y_axis_min'].value is not None and adv['y_axis_max'].value is not None:
+            plot_kwargs['ylim'] = (adv['y_axis_min'].value, adv['y_axis_max'].value)
+
+        # if adv['y_axis_secondary_min'].value is not None and adv['y_axis_secondary_max'].value is not None:
+        #     plot_kwargs['ylim_secondary'] = (adv['y_axis_secondary_min'].value, adv['y_axis_secondary_max'].value)
+
+
+        # Add tools
+        plot_kwargs['tools'] = adv['tools'].value
+
+        # Use datashader for large datasets if enabled
+        if self.use_datashader and len(self.selected_cell_ids) > 100:
+            plot_kwargs['datashade'] = True
+            plot_kwargs['rasterize'] = True
+        # Inside update_plot before creating the plot
+
+        # print(plot_kwargs)
+        # Generate the plot
+        try:
+            main_plot_overlay = self.cycle_data.hvplot(**plot_kwargs)
+            main_plot = hv.Overlay(main_plot_overlay.values())
+            secondary_plot = None
+            # Add secondary y-axis if selected
+            if self.y_axis_secondary is not None and self.y_axis_secondary != 'None':
+                renderer = hv.renderer('bokeh')
+                main_plot_state = renderer.get_plot(main_plot).state
+
+                # Extract colors from the first plot's renderers
+                series_colors = [
+                    renderer.glyph.line_color if hasattr(renderer.glyph, 'line_color') else
+                    renderer.glyph.fill_color for renderer in main_plot_state.renderers
+                ]
+                print(series_colors)
+                # Create secondary axis plot
+                secondary_kwargs = plot_kwargs.copy()
+                secondary_kwargs['y'] = self.y_axis_secondary
+
+                if adv['y_axis_secondary_label'].value:
+                    secondary_kwargs['ylabel'] = adv['y_axis_secondary_label'].value
+                else:
+                    secondary_kwargs['ylabel'] = self.y_axis_secondary.replace('_', ' ').title()
+
+                # Set secondary axis limits if provided
+                if adv['y_axis_secondary_min'].value is not None and adv['y_axis_secondary_max'].value is not None:
+                    secondary_kwargs['ylim'] = (
+                        adv['y_axis_secondary_min'].value,
+                        adv['y_axis_secondary_max'].value
+                    )
+                secondary_kwargs['yaxis'] = 'right'
+                secondary_kwargs['legend'] = False
+                secondary_kwargs['color'] = series_colors
+                print(self.group_colors)
+
+                print(secondary_kwargs)
+                secondary_plot_overlay = self.cycle_data.hvplot(**secondary_kwargs)
+                secondary_plot = hv.Overlay(secondary_plot_overlay.values())
+            if not secondary_plot is None:
+                print(main_plot)
+                print(secondary_plot)
+                overlay = hv.Overlay([main_plot, secondary_plot]).opts(multi_y=True, show_legend = True)
+                print(overlay)
+            else:
+                overlay = main_plot_overlay
+            # # Add secondary y-axis if selected
+            # if self.y_axis_secondary is not None and self.y_axis_secondary != 'None':
+            #     # Create the hook for adding secondary axis
+            #     second_axis_hook = self.create_second_axis_hook()
+            #
+            #     # Determine if we need datashader
+            #     needs_datashader = self.use_datashader and len(self.selected_cell_ids) > 100
+            #
+            #     if needs_datashader:
+            #         # For datashader, we need to apply the hook after datashading
+            #         # First create the plot with datashader
+            #         main_plot = self.cycle_data.hvplot(
+            #             **plot_kwargs,
+            #             datashade=True,
+            #             rasterize=True
+            #         )
+            #
+            #         # Then apply the hook
+            #         main_plot = main_plot.opts(hooks=[second_axis_hook])
+            #     else:
+            #         # Without datashader, just apply hook directly
+            #         main_plot = self.cycle_data.hvplot(**plot_kwargs).opts(hooks=[second_axis_hook])
+            # else:
+            #     main_plot = self.cycle_data.hvplot(**plot_kwargs)
+
+            # Store the current plot for export
+            self.current_plot = overlay
+
+            # Render the plot
+            self.plot_container.append(overlay)
+
+        except Exception as e:
+            self.plot_container.append(pn.pane.Markdown(
+                f"**Error creating plot:** {str(e)}",
+                styles={"color": "red"}
+            ))
+            print(f"Plot error: {str(e)}")
+            import traceback
+            traceback.print_exc()
+
+    def open_advanced_settings(self, event):
+        """Open the advanced settings modal"""
+        self.advanced_settings_card.collapsed = False
+
+        # Pre-populate values from current settings
+        adv = self.advanced_settings_widgets
+
+        # Update current labels as placeholders
+        adv['x_axis_label'].placeholder = self.x_axis.replace('_', ' ').title()
+        adv['y_axis_label'].placeholder = self.y_axis.replace('_', ' ').title()
+
+        if self.y_axis_secondary:
+            adv['y_axis_secondary_label'].placeholder = self.y_axis_secondary.replace('_', ' ').title()
+            adv['y_axis_secondary_label'].disabled = False
+            adv['y_axis_secondary_type'].disabled = False
+            adv['y_axis_secondary_min'].disabled = False
+            adv['y_axis_secondary_max'].disabled = False
+        else:
+            adv['y_axis_secondary_label'].disabled = True
+            adv['y_axis_secondary_type'].disabled = True
+            adv['y_axis_secondary_min'].disabled = True
+            adv['y_axis_secondary_max'].disabled = True
+
+    def close_advanced_settings(self, event):
+        """Close the advanced settings modal without applying changes"""
+        self.advanced_settings_card.collapsed = True
+
+    def apply_advanced_settings(self, event):
+        """Apply the advanced settings and update the plot"""
+        self.update_plot()
+        self.advanced_settings_card.collapsed = True
+
+    def open_series_settings(self, event):
+        """Open the series settings modal and populate with current series"""
+        if self.cycle_data is None or self.cycle_data.is_empty():
+            return
+
+        # Get unique values for the grouping column
+        unique_groups = self.cycle_data[self.group_by].unique().to_list()
+
+        # Create UI elements for each series
+        series_controls = []
+
         for group in unique_groups:
             group_str = str(group)
-            group_data = self.cycle_data.filter(pl.col(self.group_by.value) == group)
 
-            # Skip if series is set to invisible
-            if group_str in self.series_settings and not self.series_settings[group_str]['visible'].value:
-                continue
-
-            # Apply series-specific settings if available
-            series_props = {}
-            if group_str in self.series_settings:
-                settings = self.series_settings[group_str]
-
-                # Line properties
-                if settings['line_style'].value != "none":
-                    series_props["line"] = {
-                        "dash": settings['line_style'].value,
-                        "width": settings['line_width'].value
-                    }
-                    if settings['color'].value:
-                        series_props["line"]["color"] = settings['color'].value
-
-                # Marker properties
-                if settings['marker_style'].value != "none":
-                    series_props["marker"] = {
-                        "symbol": settings['marker_style'].value,
-                        "size": settings['marker_size'].value
-                    }
-                    if settings['color'].value:
-                        series_props["marker"]["color"] = settings['color'].value
-
-            # Create the trace
-            if self.plot_type.value == "bar":
-                trace = go.Bar(
-                    x=group_data[self.x_axis.value].to_numpy(),
-                    y=group_data[self.y_axis.value].to_numpy(),
-                    name=group_str,
-                    **series_props
-                )
-            else:
-                trace = go.Scatter(
-                    x=group_data[self.x_axis.value].to_numpy(),
-                    y=group_data[self.y_axis.value].to_numpy(),
-                    mode=plot_mode,
-                    name=group_str,
-                    hovertemplate=(
-                            f"{self.group_by.value.replace('_', ' ').title()}: {group}<br>" +
-                            f"{self.x_axis.value}: %{{x}}<br>" +
-                            f"{self.y_axis.value}: %{{y:.2f}}<extra></extra>"
+            # Create settings for this series if it doesn't exist
+            if group_str not in self.series_settings:
+                self.series_settings[group_str] = {
+                    'visible': pn.widgets.Checkbox(name="Visible", value=True, width=100),
+                    'line_color': pn.widgets.ColorPicker(name="Line Color", width=100),
+                    'line_width': pn.widgets.IntSlider(name="Line Width", start=1, end=5, value=2, width=150),
+                    'line_style': pn.widgets.Select(
+                        name="Line Style",
+                        options=["solid", "dashed", "dotted", "dotdash"],
+                        value="solid",
+                        width=100
                     ),
-                    **series_props
-                )
+                    'marker_size': pn.widgets.IntSlider(name="Marker Size", start=3, end=15, value=6, width=150),
+                    'marker_shape': pn.widgets.Select(
+                        name="Marker",
+                        options=["circle", "square", "triangle", "diamond", "cross", "x", "star"],
+                        value="circle",
+                        width=100
+                    ),
+                    'alpha': pn.widgets.FloatSlider(name="Opacity", start=0.1, end=1.0, value=0.8, step=0.1, width=150)
+                }
 
-            fig.add_trace(trace)
+            # Create a card for this series
+            series_card = pn.Card(
+                pn.Column(
+                    pn.Row(self.series_settings[group_str]['visible'], self.series_settings[group_str]['line_color']),
+                    pn.Row(pn.pane.Markdown("Line:"), self.series_settings[group_str]['line_width'],
+                           self.series_settings[group_str]['line_style']),
+                    pn.Row(pn.pane.Markdown("Marker:"), self.series_settings[group_str]['marker_size'],
+                           self.series_settings[group_str]['marker_shape']),
+                    pn.Row(pn.pane.Markdown("Opacity:"), self.series_settings[group_str]['alpha'])
+                ),
+                title=f"{group_str}",
+                collapsed=True,
+                collapsible=True
+            )
 
-        # Apply advanced settings
-        layout_props = {
-            "template": self.color_theme.value,
-            "legend_title_text": self.group_by.value.replace('_', ' ').title(),
-        }
+            series_controls.append(series_card)
 
-        # Set axis titles (using advanced settings if available)
-        layout_props["xaxis_title"] = (self.advanced_settings['x_axis_title'].value
-                                       or self.x_axis.value.replace('_', ' ').title())
-        layout_props["yaxis_title"] = (self.advanced_settings['y_axis_title'].value
-                                       or self.y_axis.value.replace('_', ' ').title())
+        # Add apply and cancel buttons
+        self.series_apply_button = pn.widgets.Button(name="Apply All", button_type="success", width=100)
+        self.series_cancel_button = pn.widgets.Button(name="Cancel", button_type="danger", width=100)
 
-        # Apply other advanced settings if they have been set
-        if self.advanced_settings['plot_title'].value:
-            layout_props["title"] = self.advanced_settings['plot_title'].value
+        self.series_apply_button.on_click(self.apply_series_settings)
+        self.series_cancel_button.on_click(self.close_series_settings)
 
-        if self.advanced_settings['title_font_size'].value:
-            layout_props["title_font_size"] = self.advanced_settings['title_font_size'].value
+        # Build the series settings card content
+        self.series_settings_card.objects = [
+            pn.Column(
+                pn.pane.Markdown("## Series Appearance Settings", styles={"text-align": "center"}),
+                pn.Column(*series_controls, scroll=True, height=400),
+                pn.Row(self.series_apply_button, self.series_cancel_button, align='end')
+            )
+        ]
 
-        # Set axis types
-        layout_props["xaxis_type"] = self.advanced_settings['x_axis_type'].value
-        layout_props["yaxis_type"] = self.advanced_settings['y_axis_type'].value
+        # Show the series settings card
+        self.series_settings_card.collapsed = False
 
-        # Set axis ranges if provided
-        if self.advanced_settings['x_axis_min'].value is not None:
-            layout_props.setdefault("xaxis", {})
-            layout_props["xaxis"]["range"] = [
-                self.advanced_settings['x_axis_min'].value,
-                self.advanced_settings['x_axis_max'].value or None
-            ]
+    def close_series_settings(self, event):
+        """Close the series settings modal without applying changes"""
+        self.series_settings_card.collapsed = True
 
-        if self.advanced_settings['y_axis_min'].value is not None:
-            layout_props.setdefault("yaxis", {})
-            layout_props["yaxis"]["range"] = [
-                self.advanced_settings['y_axis_min'].value,
-                self.advanced_settings['y_axis_max'].value or None
-            ]
+    def apply_series_settings(self, event):
+        """Apply the series settings and update the plot"""
+        # The series settings are already stored in self.series_settings
+        # and will be accessed when generating the plot
+        self.update_plot()
+        self.close_series_settings(None)
 
-        # Grid settings
-        if not self.advanced_settings['show_grid'].value:
-            layout_props.setdefault("xaxis", {})
-            layout_props.setdefault("yaxis", {})
-            layout_props["xaxis"]["showgrid"] = False
-            layout_props["yaxis"]["showgrid"] = False
-        else:
-            grid_color = self.advanced_settings['grid_color'].value
-            layout_props.setdefault("xaxis", {})
-            layout_props.setdefault("yaxis", {})
-            layout_props["xaxis"]["gridcolor"] = grid_color
-            layout_props["yaxis"]["gridcolor"] = grid_color
+    def export_png(self, event):
+        """Export the current plot as PNG"""
+        if self.current_plot is None:
+            return
 
-        # Legend settings
-        layout_props["showlegend"] = self.advanced_settings['show_legend'].value
-        if self.advanced_settings['show_legend'].value:
-            legend_position = self.advanced_settings['legend_position'].value.split()
-            layout_props["legend"] = {
-                "y": 1.0 if legend_position[0] == "top" else 0.5 if legend_position[0] == "center" else 0.0,
-                "x": 0.0 if legend_position[1] == "left" else 0.5 if legend_position[1] == "center" else 1.0,
-                "yanchor": "top" if legend_position[0] == "top" else "middle" if legend_position[
-                                                                                     0] == "center" else "bottom",
-                "xanchor": "left" if legend_position[1] == "left" else "center" if legend_position[
-                                                                                       1] == "center" else "right"
+        try:
+            # Create a temporary Bokeh renderer to export the plot
+            renderer = hv.renderer('bokeh')
+
+            # Get the Bokeh figure
+            bokeh_plot = renderer.get_plot(self.current_plot).state
+
+            # Set up JavaScript callback to trigger download
+            export_js = """
+            function exportPlot() {
+                const canvas = document.createElement('canvas');
+                const plot = Bokeh.documents[0].get_model_by_id('${id}');
+                const width = plot.inner_width;
+                const height = plot.inner_height;
+
+                canvas.width = width;
+                canvas.height = height;
+
+                plot.export_png({canvas: canvas}).then(function() {
+                    const a = document.createElement('a');
+                    a.href = canvas.toDataURL('image/png');
+                    a.download = 'battery_cycles_plot.png';
+                    a.click();
+                });
             }
+            exportPlot();
+            """
 
-        # Size settings
-        layout_props["height"] = self.advanced_settings['plot_height'].value
-        layout_props["width"] = self.advanced_settings['plot_width'].value
+            # Replace the placeholder with the actual model ID
+            export_js = export_js.replace('${id}', bokeh_plot.id)
 
-        # Update the layout
-        fig.update_layout(**layout_props)
+            # Execute the JavaScript to download the PNG
+            pn.extension()
+            pn.state.execute(export_js)
 
-        # Add the plot to the container
-        self.cycle_plot_container.append(pn.pane.Plotly(fig))
+            # Show a success message
+            self.plot_container.append(
+                pn.pane.Alert("Plot exported as PNG", alert_type="success", margin=(10, 0, 0, 0))
+            )
+
+        except Exception as e:
+            # Show an error message
+            self.plot_container.append(
+                pn.pane.Alert(f"Error exporting PNG: {str(e)}", alert_type="danger", margin=(10, 0, 0, 0))
+            )
+
+    def export_svg(self, event):
+        """Export the current plot as SVG"""
+        if self.current_plot is None:
+            return
+
+        try:
+            # Create a temporary Bokeh renderer to export the plot
+            renderer = hv.renderer('bokeh')
+
+            # Get the Bokeh figure
+            bokeh_plot = renderer.get_plot(self.current_plot).state
+
+            # Set up JavaScript callback to trigger download
+            export_js = """
+            function exportPlot() {
+                const plot = Bokeh.documents[0].get_model_by_id('${id}');
+
+                plot.export_svg().then(function(svg) {
+                    const a = document.createElement('a');
+                    const blob = new Blob([svg], {type: 'image/svg+xml'});
+                    a.href = URL.createObjectURL(blob);
+                    a.download = 'battery_cycles_plot.svg';
+                    a.click();
+                });
+            }
+            exportPlot();
+            """
+
+            # Replace the placeholder with the actual model ID
+            export_js = export_js.replace('${id}', bokeh_plot.id)
+
+            # Execute the JavaScript to download the SVG
+            pn.extension()
+            pn.state.execute(export_js)
+
+            # Show a success message
+            self.plot_container.append(
+                pn.pane.Alert("Plot exported as SVG", alert_type="success", margin=(10, 0, 0, 0))
+            )
+
+        except Exception as e:
+            # Show an error message
+            self.plot_container.append(
+                pn.pane.Alert(f"Error exporting SVG: {str(e)}", alert_type="danger", margin=(10, 0, 0, 0))
+            )
 
     def create_layout(self):
-        """Create the layout for the cycle plots tab with enhanced controls"""
-        # Basic controls sidebar
-        basic_controls = pn.Column(
-            pn.pane.Markdown("## Plot Settings", styles={'background': '#f0f0f0', 'padding': '10px'}),
-            self.x_axis,
-            self.y_axis,
-            self.plot_type,
-            pn.pane.Markdown("## Grouping"),
-            self.group_by,
-            width=300,
+        """Create the layout for the cycle plots tab"""
+        # Main layout with sidebar and content
+        sidebar = pn.Column(
+            self.axis_settings_pane,
+            pn.layout.Divider(),
+            self.action_buttons,
+            width=250,
             sizing_mode="fixed",
             styles={'background': '#f8f9fa', 'border-right': '1px solid #ddd', 'padding': '10px'}
         )
 
-        # Main content area with plot and cards
+        # Create main content area
         main_content = pn.Column(
-            self.cycle_plot_container,
-            pn.Row(
-                self.series_settings_card,
-                # self.advanced_settings_card,
-                sizing_mode='stretch_width'
-            ),
-            pn.Row(self.advanced_settings_card,
-                # self.advanced_settings_card,
-                sizing_mode='stretch_width'
-            ),
-            sizing_mode='stretch_both'
+            pn.pane.Markdown("# Cycle Analysis", styles={"margin-bottom": "10px"}),
+            self.plot_container,
+            sizing_mode="stretch_width",
+            width_policy="max",
+            min_width=600
         )
 
-        # Combine the layout components
+        settings_column = pn.Column(
+            self.advanced_settings_card,
+            self.series_settings_card,
+            width=350,
+            sizing_mode="fixed",
+            styles = {'padding': '10px', 'border-left': '1px solid #ddd'}
+        )
+
+        # Combine sidebar and main content
         layout = pn.Row(
-            basic_controls,
+            sidebar,
             main_content,
-            sizing_mode='stretch_both'
+            settings_column,
+            sizing_mode="stretch_both"
         )
 
         return layout
-

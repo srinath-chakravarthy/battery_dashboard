@@ -1,4 +1,5 @@
-# TODO List 
+This library uses polars dataframe for efficiency
+# TODO List
 # Cycle Selector Tab
 ## Featurs to add 
 - [x] Implement Select all cells in the filter/selection button 
@@ -10,14 +11,14 @@
 
 # Cycle Plots Tab
 ## Features to add 
-- [ ] Move to hvplot + bokeh for default backend and other rendering engines if needed. 
-- [ ] Implement adding 2nd axis to plot 
-- [ ] Implement default axis lines and axis ticks for all X-Y plots
-- [ ] All custom Plot settings on the Right Hand side as a Card
-- [ ] Series settings should be smaller since there might be quite a few series 
-  - [ ] Redash type series settings is better i think, rather than this way. Present a table and let the user change it 
+- [x] Move to hvplot + bokeh for default backend and other rendering engines if needed. 
+- [x] Implement adding 2nd axis to plot 
+- [x] Implement default axis lines and axis ticks for all X-Y plots
+- [x] All custom Plot settings on the Right Hand side as a Card
+- [x] Series settings should be smaller since there might be quite a few series 
+  - [x] Redash type series settings is better i think, rather than this way. Present a table and let the user change it 
     -  [ ] If num series > 10 do not give the ability to change
-- [ ] Global marker for marker/line settings and color
+- [x] Global marker for marker/line settings and color
 
 # Database level settings. 
 - [ ] Definitely add status marker for if test is complete or not

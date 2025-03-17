@@ -1,8 +1,10 @@
 # battery_dashboard/main.py
+
 import panel as pn
 from dotenv import load_dotenv
 import param
 import re
+import holoviews as hv
 # load modules
 from battery_dashboard.components.cell_selector import CellSelectorTab
 from battery_dashboard.components.cycle_plots import CyclePlotsTab
