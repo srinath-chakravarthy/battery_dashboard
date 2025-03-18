@@ -492,6 +492,39 @@ class CyclePlotsTab(param.Parameterized):
 
         return HoverTool(tooltips=tooltips)
 
+    def apply_series_stylings(self, plot_kwargs):
+        """Apply series-specific styling to plot kwargs before rendering"""
+        # Skip if no series settings are defined
+        if not self.series_settings:
+            return plot_kwargs
+
+        # Check for visibility settings
+        has_invisible = False
+        for group_str, settings in self.series_settings.items():
+            if not settings.get('visible', True):
+                has_invisible = True
+                break
+
+        # If some series should be invisible, use a custom groupby function
+        if has_invisible:
+            original_by = plot_kwargs.get('by', self.group_by)
+
+            # Create a list of visible groups
+            visible_groups = [group_str for group_str, settings in self.series_settings.items()
+                              if settings.get('visible', True)]
+
+            # Create a custom groupby function for hvplot
+            def custom_groupby(df):
+                for group in df[original_by].unique():
+                    group_str = str(group)
+                    if group_str in visible_groups:
+                        yield group, df[df[original_by] == group]
+
+            # Replace the 'by' parameter with our custom function
+            plot_kwargs['groupby'] = custom_groupby
+            del plot_kwargs['by']
+
+        return plot_kwargs
 
     def update_plot(self, event=None):
         """Update the plot based on current settings"""
@@ -561,6 +594,8 @@ class CyclePlotsTab(param.Parameterized):
         # Inside update_plot before creating the plot
 
         # print(plot_kwargs)
+        plot_kwargs = self.apply_series_stylings(plot_kwargs)
+        print(plot_kwargs)
         # Generate the plot
         try:
             main_plot_overlay = self.cycle_data.hvplot(**plot_kwargs)
@@ -707,7 +742,7 @@ class CyclePlotsTab(param.Parameterized):
             settings_data["y_axis"].append(settings['y_axis'])
 
         # Create the table as before...
-            # Convert to Polars DataFrame
+            # Convert to Pandas DataFrame
         settings_df = pd.DataFrame(settings_data)
         print(settings_df)
 
