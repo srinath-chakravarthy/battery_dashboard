@@ -436,9 +436,15 @@ class CyclePlotsTab(param.Parameterized):
         if self.cycle_data is None or self.cycle_data.is_empty():
             return
 
+        # Get cell metadata columns as a set for efficient lookups
+        cell_metadata_columns = set()
+        if self.selected_cell_metadata is not None and not self.selected_cell_metadata.is_empty():
+            cell_metadata_columns = set(self.selected_cell_metadata.columns)
+
         # Get all numeric columns for axes
         numeric_cols = [col for col in self.cycle_data.columns
-                        if self.cycle_data[col].dtype in [pl.Float32, pl.Float64, pl.Int32, pl.Int64]]
+                        if self.cycle_data[col].dtype in [pl.Float32, pl.Float64, pl.Int32, pl.Int64]
+                        and col not in cell_metadata_columns]
 
         # Get categorical columns for grouping
         categorical_cols = [

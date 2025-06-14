@@ -1,0 +1,61 @@
+# General
+.DS_Store
+Thumbs.db
+*.log
+*.lock
+*.tmp
+*.temp
+*.cache
+*.idea/
+*.vscode/
+*.sublime-workspace
+*.sublime-project
+*.zip
+*.tar.gz
+*.bak
+*.swp
+*.orig
+*.so
+*.class
+
+# Node.js
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.pdb
+
+# Java
+*.class
+*.jar
+*.war
+*.ear
+*.iml
+*.project
+
+# Ruby
+*.gem
+*.rbc
+.rspec
+
+# PHP
+vendor/
+
+# Go
+*.test
+*.out
+
+# Rust
+/target/
+**/*.rs.bk
+
+# Environment variables
+.env
+.env.*

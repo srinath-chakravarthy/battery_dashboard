@@ -38,8 +38,10 @@ def get_redash_query_results(query_id, params=None, cache_ttl=300):
 # Load initial data
 def load_initial_data():
     df = get_redash_query_results(CELL_QUERY_ID)
-    if not df.is_empty() and "regular_cycles" in df.columns:
-        df = df.filter(pl.col("regular_cycles") > 20)
+    if not df.is_empty() and "total_cycles" in df.columns:
+        df = df.filter(pl.col("total_cycles") > 5)
+
+    print(f"Initial data loaded with {len(df)} rows.")
     return df
 
 
@@ -47,7 +49,6 @@ def get_cycle_data(cell_ids=None, cell_metadata=None):
     """Get cycle data and join with cell metadata."""
     if not cell_ids:
         return pl.DataFrame()
-
     # Create a progress widget
     # progress = pn.widgets.Progress(value=0, max=len(cell_ids), name="Loading Cells")
     # if status_indicator:
@@ -60,6 +61,10 @@ def get_cycle_data(cell_ids=None, cell_metadata=None):
     for cell_id in cell_ids:
         params = {"cell_ids": str(cell_id)}
         cell_data = get_redash_query_results(CYCLE_QUERY_ID, params)
+        # Debugging step
+        # print(f"Fetched columns for cell_id {cell_id}: {cell_data.columns}")
+        # print(cell_data.head())
+
         if not cell_data.is_empty():
             # List of columns that should be normalized (containing capacity or energy)
             normalize_columns = [col for col in cell_data.columns if
@@ -69,8 +74,17 @@ def get_cycle_data(cell_ids=None, cell_metadata=None):
             norm_expressions = []
             for col in normalize_columns:
                 # 1. Regular cycle normalization (using cycle 1 as reference)
-                first_cycle_val = cell_data.filter(pl.col('regular_cycle_number') == 1)[col].item()
+                # first_cycle_val = cell_data.filter(pl.col('regular_cycle_number') == 1)[col].item()
+                first_cycle_val = (
+                    cell_data
+                    .filter(pl.col('regular_cycle_number') > 0)
+                    .sort('regular_cycle_number')
+                    .head(1)
+                    .select(col)
+                    .item()
+                )
                 norm_expressions.append(
+
                     (pl.col(col) / first_cycle_val).alias(f'{col}_norm_reg')
                 )
 
@@ -85,6 +99,6 @@ def get_cycle_data(cell_ids=None, cell_metadata=None):
                 cell_data = cell_data.with_columns(norm_expressions)
 
             all_results.append(cell_data)
-
+    print('Number of cells loaded: ', len(all_results))
     cycle_data = pl.concat(all_results) if all_results else pl.DataFrame()
     return cycle_data

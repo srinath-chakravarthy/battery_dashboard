@@ -100,8 +100,14 @@ class BatteryDashboard(param.Parameterized):
         )
         return template
 
-# Initialize and run the dashboard
-dashboard = BatteryDashboard()
-app = dashboard.create_layout()
+def create_app():
+    dashboard = BatteryDashboard()
+    return dashboard.create_layout()
 
-app.servable()
+if __name__ == '__main__':
+    app = create_app()
+    app.servable()
+else:
+    # For imports
+    dashboard = BatteryDashboard()
+    app = dashboard.create_layout()
