@@ -19,6 +19,6 @@ CACHE_TTL=os.getenv("CACHE_TTL", 300)
 MAX_CACHE_SIZE=os.getenv("MAX_CACHE_SIZE", 100)
 
 # Panel Server Configuration
-PANEL_PORT=os.getenv("PANEL_PORT", 8061)
+PANEL_PORT=int(os.getenv("PANEL_PORT", 8061))
 PANEL_HOST=os.getenv("PANEL_HOST", "localhost")
 PANEL_ALLOW_WEBSOCKET_ORIGIN=os.getenv("PANEL_ALLOW_WEBSOCKET_ORIGIN", "*")
