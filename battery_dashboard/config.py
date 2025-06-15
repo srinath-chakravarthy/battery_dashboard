@@ -22,3 +22,11 @@ MAX_CACHE_SIZE=os.getenv("MAX_CACHE_SIZE", 100)
 PANEL_PORT=int(os.getenv("PANEL_PORT", 8061))
 PANEL_HOST=os.getenv("PANEL_HOST", "localhost")
 PANEL_ALLOW_WEBSOCKET_ORIGIN=os.getenv("PANEL_ALLOW_WEBSOCKET_ORIGIN", "*")
+
+# Validate critical configuration
+if not REDASH_API_KEY:
+    raise ValueError("REDASH_API_KEY environment variable is required")
+
+print(f"Configuration loaded for {ENVIRONMENT} environment")
+print(f"Redash URL: {REDASH_URL}")
+print(f"Panel will run on: {PANEL_HOST}:{PANEL_PORT}")
