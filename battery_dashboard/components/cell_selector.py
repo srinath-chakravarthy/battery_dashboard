@@ -72,22 +72,45 @@ class CellSelectorTab(param.Parameterized):
             size=6,
             width=300
         )
+        # self.data_table = pn.widgets.Tabulator(
+        #     pagination="remote",
+        #     page_size=50,
+        #     selectable="checkbox",
+        #     styles={
+        #         '_selector': {'padding': '12px'},  # Adds padding to checkbox column
+        #         '*': {'padding': '4px'}  # Adds padding to all other cells
+        #     },
+        #
+        #     header_align="left",
+        #     theme="bootstrap4",
+        #     layout="fit_data_table",
+        #     show_index=False,
+        #     frozen_rows = [-2, -1],
+        #     height=600,
+        #     theme_classes=["table-bordered", "thead-dark"],
+        # )
         self.data_table = pn.widgets.Tabulator(
             pagination="remote",
             page_size=50,
             selectable="checkbox",
-            styles={
-                '_selector': {'padding': '12px'},  # Adds padding to checkbox column
-                '*': {'padding': '4px'}  # Adds padding to all other cells
-            },
-
             header_align="left",
-            theme="bootstrap4",
             layout="fit_data_table",
             show_index=False,
-            frozen_rows = [-2, -1],
             height=600,
-            theme_classes=["table-bordered", "thead-dark"],
+            css_classes=["modern-table"],
+            configuration={
+                "columnDefaults": {
+                    "vertAlign": "middle",
+                    "headerSort": True,
+                    "resizable": True
+                },
+                "layout": "fitDataFill",
+                "responsiveLayout": "hide",
+                "placeholder": "No data available",
+                "movableColumns": True,
+                "selectable": True,
+                "selectableRangeMode": "click"
+            }
         )
 
         # Add a load button
@@ -610,29 +633,29 @@ class CellSelectorTab(param.Parameterized):
 
     def create_modern_table(self):
         """Create modern data table"""
-        self.data_table = pn.widgets.Tabulator(
-            pagination="remote",
-            page_size=50,
-            selectable="checkbox",
-            header_align="left",
-            layout="fit_data_table",
-            show_index=False,
-            height=600,
-            css_classes=["modern-table"],
-            configuration={
-                "columnDefaults": {
-                    "vertAlign": "middle",
-                    "headerSort": True,
-                    "resizable": True
-                },
-                "layout": "fitDataFill",
-                "responsiveLayout": "hide",
-                "placeholder": "No data available",
-                "movableColumns": True,
-                "selectable": True,
-                "selectableRangeMode": "click"
-            }
-        )
+        # self.data_table = pn.widgets.Tabulator(
+        #     pagination="remote",
+        #     page_size=50,
+        #     selectable="checkbox",
+        #     header_align="left",
+        #     layout="fit_data_table",
+        #     show_index=False,
+        #     height=600,
+        #     css_classes=["modern-table"],
+        #     configuration={
+        #         "columnDefaults": {
+        #             "vertAlign": "middle",
+        #             "headerSort": True,
+        #             "resizable": True
+        #         },
+        #         "layout": "fitDataFill",
+        #         "responsiveLayout": "hide",
+        #         "placeholder": "No data available",
+        #         "movableColumns": True,
+        #         "selectable": True,
+        #         "selectableRangeMode": "click"
+        #     }
+        # )
         return self.data_table
 
     def create_modern_action_bar(self):
@@ -744,52 +767,52 @@ class CellSelectorTab(param.Parameterized):
         return layout
 
     def create_layout(self):
-        return self.create_modern_layout()
-        # # Create search components in a horizontal row
-        # search_row = pn.Row(
-        #     self.search_input,
-        #     self.search_button,
-        #     self.clear_search_button,
-        #     styles={"margin-bottom": "10px"}
-        # )
-        # # Create selection buttons row
-        # selection_buttons = self.create_selection_buttons()
-        #
-        # # Create the statistics card
-        # stats_card = self.create_statistics_card()
-        #
-        # sidebar = pn.Column(
-        #     pn.pane.Markdown("## Filters"),
-        #     *self.filter_widgets.values(),
-        #     pn.pane.Markdown("## Display Settings"),
-        #     self.column_selector,
-        #     stats_card,
-        #     self.selection_indicator,
-        #     width=300,
-        #     sizing_mode="fixed",
-        # )
-        # # Create a row with the button and selection indicator for below the table
-        # action_row = pn.Row(
-        #     self.load_button,
-        #     self.selection_indicator,
-        #     align="center"
-        # )
-        #
-        # # Stack the table and action row in a column with scrollbars
-        # main_content = pn.Column(
-        #     pn.pane.Markdown("### Cell Data", styles={"margin-bottom": "10px"}),
-        #     search_row,
-        #     selection_buttons,
-        #     pn.Column(
-        #         self.data_table,
-        #         max_height=650,  # Set maximum height
-        #         scroll=True,  # Enable scrolling
-        #         width_policy='max',
-        #         styles={'overflow-y': 'auto', 'overflow-x': 'auto'}
-        #     ),
-        #     action_row,
-        #     sizing_mode="stretch_width"
-        # )
-        #
-        # return pn.Row(sidebar, main_content)
+        # return self.create_modern_layout()
+        # Create search components in a horizontal row
+        search_row = pn.Row(
+            self.search_input,
+            self.search_button,
+            self.clear_search_button,
+            styles={"margin-bottom": "10px"}
+        )
+        # Create selection buttons row
+        selection_buttons = self.create_selection_buttons()
+
+        # Create the statistics card
+        stats_card = self.create_statistics_card()
+
+        sidebar = pn.Column(
+            pn.pane.Markdown("## Filters"),
+            *self.filter_widgets.values(),
+            pn.pane.Markdown("## Display Settings"),
+            self.column_selector,
+            stats_card,
+            self.selection_indicator,
+            width=300,
+            sizing_mode="fixed",
+        )
+        # Create a row with the button and selection indicator for below the table
+        action_row = pn.Row(
+            self.load_button,
+            self.selection_indicator,
+            align="center"
+        )
+
+        # Stack the table and action row in a column with scrollbars
+        main_content = pn.Column(
+            pn.pane.Markdown("### Cell Data", styles={"margin-bottom": "10px"}),
+            search_row,
+            selection_buttons,
+            pn.Column(
+                self.data_table,
+                max_height=650,  # Set maximum height
+                scroll=True,  # Enable scrolling
+                width_policy='max',
+                styles={'overflow-y': 'auto', 'overflow-x': 'auto'}
+            ),
+            action_row,
+            sizing_mode="stretch_width"
+        )
+
+        return pn.Row(sidebar, main_content)
 
