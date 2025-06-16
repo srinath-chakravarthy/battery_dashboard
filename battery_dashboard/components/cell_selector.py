@@ -230,6 +230,61 @@ class CellSelectorTab(param.Parameterized):
 
         return filtered_df
 
+    def format_table_data(self, df):
+        """Format table data with status indicators and better presentation"""
+        formatted_df = df.copy()
+
+        # Add status dots for visual indicators
+        if 'test_status' in formatted_df.columns:
+            status_map = {
+                'Active': '<span class="status-dot status-active"></span>Active',
+                'Testing': '<span class="status-dot status-testing"></span>Testing',
+                'Degraded': '<span class="status-dot status-degraded"></span>Degraded',
+                'Failed': '<span class="status-dot status-degraded"></span>Failed'
+            }
+            formatted_df['Status'] = formatted_df['test_status'].map(status_map).fillna(formatted_df['test_status'])
+            formatted_df = formatted_df.drop('test_status', axis=1)
+
+        # Format numeric columns
+        numeric_columns = {
+            'actual_nominal_capacity_ah': lambda x: f"{x:.2f} Ah",
+            'last_discharge_capacity': lambda x: f"{x:.2f} Ah",
+            'discharge_capacity_retention': lambda x: f"{x:.1f}%",
+            'total_cycles': lambda x: f"{int(x):,}",
+            'regular_cycles': lambda x: f"{int(x):,}"
+        }
+
+        for col, formatter in numeric_columns.items():
+            if col in formatted_df.columns:
+                formatted_df[col] = formatted_df[col].apply(formatter)
+
+        # Rename columns for better display
+        column_renames = {
+            'cell_id': 'Cell ID',
+            'cell_name': 'Cell Name',
+            'actual_nominal_capacity_ah': 'Capacity (Ah)',
+            'regular_cycles': 'Cycles',
+            'last_discharge_capacity': 'Last Capacity',
+            'discharge_capacity_retention': 'Retention (%)'
+        }
+
+        formatted_df = formatted_df.rename(columns=column_renames)
+
+        return formatted_df
+
+    def configure_table_columns(self):
+        """Configure table column widths and formatting"""
+        column_config = {
+            "Cell ID": {"width": 100, "frozen": True},
+            "Cell Name": {"width": 150},
+            "Capacity (Ah)": {"width": 120, "align": "center"},
+            "Cycles": {"width": 80, "align": "center"},
+            "Retention (%)": {"width": 100, "align": "center"},
+            "Status": {"width": 100, "align": "center", "formatter": "html"}
+        }
+
+        return column_config
+
     def update_table_data(self, *events):
         # Apply row filters to get filtered rows (all columns)
         self.filtered_cell_data = apply_filters(self.cell_data, self.filter_widgets)
@@ -243,6 +298,9 @@ class CellSelectorTab(param.Parameterized):
 
         # Create display DataFrame with filtered rows and selected columns
         display_df = self.filtered_cell_data.select(display_columns).to_pandas()
+
+        formatted_df = self.format_table_data(display_df)
+        self.data_table.value = formatted_df
 
         # Update the table view with column-filtered data
         self.data_table.value = display_df
@@ -429,52 +487,309 @@ class CellSelectorTab(param.Parameterized):
 
         return stats_card
 
-    def create_layout(self):
-        # Create search components in a horizontal row
-        search_row = pn.Row(
+    def create_modern_search_bar(self):
+        """Create a modern search bar with icon"""
+        search_container = pn.Row(
+            pn.pane.HTML("""
+                <div class="search-container">
+                    <div class="search-input" style="flex: 1;">
+                    </div>
+                </div>
+            """, height=0, margin=0),
             self.search_input,
             self.search_button,
             self.clear_search_button,
-            styles={"margin-bottom": "10px"}
+            css_classes=["search-container"],
+            margin=(0, 0, 16, 0)
         )
-        # Create selection buttons row
-        selection_buttons = self.create_selection_buttons()
 
-        # Create the statistics card
-        stats_card = self.create_statistics_card()
+        # Add custom CSS class to search input
+        self.search_input.css_classes = ["search-input"]
+
+        return search_container
+
+    def create_modern_filters_sidebar(self):
+        """Create modern sidebar with filters"""
+        # Filter sections
+        filter_sections = []
+
+        # Quick search section
+        quick_search = pn.Column(
+            pn.pane.HTML('<div class="sidebar-title">🔍 Quick Search</div>'),
+            pn.widgets.TextInput(
+                placeholder="Quick search cells...",
+                css_classes=["search-input"],
+                width=250
+            ),
+            css_classes=["sidebar-section"]
+        )
+
+        # Filters section
+        filters_content = []
+        for name, widget in self.filter_widgets.items():
+            widget.width = 250
+            filters_content.append(widget)
+
+        filters_section = pn.Column(
+            pn.pane.HTML('<div class="sidebar-title">⚙️ Filters</div>'),
+            *filters_content,
+            css_classes=["sidebar-section"]
+        )
+
+        # Display settings section
+        display_section = pn.Column(
+            pn.pane.HTML('<div class="sidebar-title">👁️ Display Settings</div>'),
+            self.column_selector,
+            css_classes=["sidebar-section"]
+        )
+
+        # Statistics section
+        stats_section = pn.Column(
+            pn.pane.HTML('<div class="sidebar-title">📊 Selection Statistics</div>'),
+            self.create_modern_statistics_card(),
+            css_classes=["sidebar-section"]
+        )
 
         sidebar = pn.Column(
-            pn.pane.Markdown("## Filters"),
-            *self.filter_widgets.values(),
-            pn.pane.Markdown("## Display Settings"),
-            self.column_selector,
-            stats_card,
-            self.selection_indicator,
+            quick_search,
+            filters_section,
+            display_section,
+            stats_section,
             width=300,
-            sizing_mode="fixed",
+            css_classes=["sidebar"],
+            sizing_mode="fixed"
         )
-        # Create a row with the button and selection indicator for below the table
-        action_row = pn.Row(
+
+        return sidebar
+
+    def create_modern_statistics_card(self):
+        """Create modern statistics display"""
+        self.stats_container = pn.Column()
+
+        # Default stats when no selection
+        default_stats = pn.pane.HTML("""
+            <div class="stats-grid">
+                <div class="stat-card">
+                    <div class="stat-value">0</div>
+                    <div class="stat-label">Selected</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-value">-</div>
+                    <div class="stat-label">Avg Capacity</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-value">-</div>
+                    <div class="stat-label">Avg Retention</div>
+                </div>
+            </div>
+        """)
+
+        self.stats_container.append(default_stats)
+        return self.stats_container
+
+    def create_modern_selection_controls(self):
+        """Create modern selection control buttons"""
+        return pn.Row(
+            pn.widgets.Button(
+                name="Select All",
+                button_type="default",
+                icon="check-square",
+                width=120,
+                css_classes=["selection-btn"]
+            ),
+            pn.widgets.Button(
+                name="Clear Selection",
+                button_type="default",
+                icon="square",
+                width=120,
+                css_classes=["selection-btn"]
+            ),
+            pn.pane.HTML('<div class="selection-count">12 cells selected</div>'),
+            css_classes=["selection-controls"]
+        )
+
+    def create_modern_table(self):
+        """Create modern data table"""
+        self.data_table = pn.widgets.Tabulator(
+            pagination="remote",
+            page_size=50,
+            selectable="checkbox",
+            header_align="left",
+            layout="fit_data_table",
+            show_index=False,
+            height=600,
+            css_classes=["modern-table"],
+            configuration={
+                "columnDefaults": {
+                    "vertAlign": "middle",
+                    "headerSort": True,
+                    "resizable": True
+                },
+                "layout": "fitDataFill",
+                "responsiveLayout": "hide",
+                "placeholder": "No data available",
+                "movableColumns": True,
+                "selectable": True,
+                "selectableRangeMode": "click"
+            }
+        )
+        return self.data_table
+
+    def create_modern_action_bar(self):
+        """Create modern action bar with load button"""
+        self.load_button.css_classes = ["load-button"]
+        self.load_button.width = 200
+
+        action_bar = pn.Row(
             self.load_button,
-            self.selection_indicator,
+            pn.Spacer(),
+            pn.pane.HTML('<div class="selection-count">Ready to load cycle data</div>'),
+            margin=(16, 0, 0, 0),
             align="center"
         )
 
-        # Stack the table and action row in a column with scrollbars
+        return action_bar
+
+    def update_modern_statistics(self):
+        """Update statistics with modern styling"""
+        if not self.selected_cell_ids or self.selected_data is None or self.selected_data.is_empty():
+            stats_html = """
+                <div class="stats-grid">
+                    <div class="stat-card">
+                        <div class="stat-value">0</div>
+                        <div class="stat-label">Selected</div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="stat-value">-</div>
+                        <div class="stat-label">Avg Capacity</div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="stat-value">-</div>
+                        <div class="stat-label">Avg Retention</div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="stat-value">-</div>
+                        <div class="stat-label">Range</div>
+                    </div>
+                </div>
+            """
+        else:
+            num_cells = len(self.selected_cell_ids)
+
+            # Calculate statistics
+            avg_capacity = "-"
+            avg_retention = "-"
+            capacity_range = "-"
+
+            if "actual_nominal_capacity_ah" in self.selected_data.columns:
+                avg_capacity = f"{self.selected_data['actual_nominal_capacity_ah'].mean():.2f} Ah"
+                min_cap = self.selected_data['actual_nominal_capacity_ah'].min()
+                max_cap = self.selected_data['actual_nominal_capacity_ah'].max()
+                capacity_range = f"{min_cap:.1f} - {max_cap:.1f}"
+
+            if "discharge_capacity_retention" in self.selected_data.columns:
+                avg_retention = f"{self.selected_data['discharge_capacity_retention'].mean():.1f}%"
+
+            stats_html = f"""
+                <div class="stats-grid">
+                    <div class="stat-card">
+                        <div class="stat-value">{num_cells}</div>
+                        <div class="stat-label">Selected</div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="stat-value">{avg_capacity}</div>
+                        <div class="stat-label">Avg Capacity</div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="stat-value">{avg_retention}</div>
+                        <div class="stat-label">Avg Retention</div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="stat-value">{capacity_range}</div>
+                        <div class="stat-label">Range</div>
+                    </div>
+                </div>
+            """
+
+        self.stats_container.clear()
+        self.stats_container.append(pn.pane.HTML(stats_html))
+
+    def create_modern_layout(self):
+        """Create the modern layout matching the screenshot"""
+        # Create components
+        search_bar = self.create_modern_search_bar()
+        selection_controls = self.create_modern_selection_controls()
+        modern_table = self.create_modern_table()
+        action_bar = self.create_modern_action_bar()
+        sidebar = self.create_modern_filters_sidebar()
+
+        # Main content area
         main_content = pn.Column(
-            pn.pane.Markdown("### Cell Data", styles={"margin-bottom": "10px"}),
-            search_row,
-            selection_buttons,
-            pn.Column(
-                self.data_table,
-                max_height=650,  # Set maximum height
-                scroll=True,  # Enable scrolling
-                width_policy='max',
-                styles={'overflow-y': 'auto', 'overflow-x': 'auto'}
-            ),
-            action_row,
-            sizing_mode="stretch_width"
+            search_bar,
+            selection_controls,
+            modern_table,
+            action_bar,
+            css_classes=["main-content"],
+            sizing_mode="stretch_width",
+            margin=(20, 20, 20, 0)
         )
 
-        return pn.Row(sidebar, main_content)
+        # Full layout
+        layout = pn.Row(
+            sidebar,
+            main_content,
+            sizing_mode="stretch_both"
+        )
+
+        return layout
+
+    def create_layout(self):
+        return self.create_modern_layout()
+        # # Create search components in a horizontal row
+        # search_row = pn.Row(
+        #     self.search_input,
+        #     self.search_button,
+        #     self.clear_search_button,
+        #     styles={"margin-bottom": "10px"}
+        # )
+        # # Create selection buttons row
+        # selection_buttons = self.create_selection_buttons()
+        #
+        # # Create the statistics card
+        # stats_card = self.create_statistics_card()
+        #
+        # sidebar = pn.Column(
+        #     pn.pane.Markdown("## Filters"),
+        #     *self.filter_widgets.values(),
+        #     pn.pane.Markdown("## Display Settings"),
+        #     self.column_selector,
+        #     stats_card,
+        #     self.selection_indicator,
+        #     width=300,
+        #     sizing_mode="fixed",
+        # )
+        # # Create a row with the button and selection indicator for below the table
+        # action_row = pn.Row(
+        #     self.load_button,
+        #     self.selection_indicator,
+        #     align="center"
+        # )
+        #
+        # # Stack the table and action row in a column with scrollbars
+        # main_content = pn.Column(
+        #     pn.pane.Markdown("### Cell Data", styles={"margin-bottom": "10px"}),
+        #     search_row,
+        #     selection_buttons,
+        #     pn.Column(
+        #         self.data_table,
+        #         max_height=650,  # Set maximum height
+        #         scroll=True,  # Enable scrolling
+        #         width_policy='max',
+        #         styles={'overflow-y': 'auto', 'overflow-x': 'auto'}
+        #     ),
+        #     action_row,
+        #     sizing_mode="stretch_width"
+        # )
+        #
+        # return pn.Row(sidebar, main_content)
 

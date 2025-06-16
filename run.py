@@ -29,7 +29,7 @@ sys.path.insert(0, str(project_root))
 
 # Import configuration to validate environment
 try:
-    from battery_dashboard.config import PANEL_HOST, PANEL_PORT, DEBUG, REDASH_API_KEY
+    from battery_dashboard.config import PANEL_HOST, PANEL_PORT, DEBUG, REDASH_API_KEY, PANEL_ALLOW_WEBSOCKET_ORIGIN
 
     print("✓ Configuration loaded successfully")
 except Exception as e:
@@ -59,7 +59,7 @@ try:
         port=PANEL_PORT,
         host=PANEL_HOST,
         show=True,  # Automatically open browser
-        allow_websocket_origin=[PANEL_HOST, "localhost", "127.0.0.1"],
+        allow_websocket_origin=[PANEL_ALLOW_WEBSOCKET_ORIGIN, "localhost", "127.0.0.1"],
         autoreload=DEBUG,  # Enable autoreload in debug mode
         dev=DEBUG
     )

@@ -23,6 +23,10 @@ PANEL_PORT=int(os.getenv("PANEL_PORT", 8061))
 PANEL_HOST=os.getenv("PANEL_HOST", "localhost")
 PANEL_ALLOW_WEBSOCKET_ORIGIN=os.getenv("PANEL_ALLOW_WEBSOCKET_ORIGIN", "*")
 
+# Development/Production Mode
+ENVIRONMENT = os.getenv("ENVIRONMENT", "development")
+IS_PRODUCTION = ENVIRONMENT.lower() == "production"
+
 # Validate critical configuration
 if not REDASH_API_KEY:
     raise ValueError("REDASH_API_KEY environment variable is required")
