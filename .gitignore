@@ -61,4 +61,4 @@ vendor/
 .env.*
 
 #Temprorary UI for other testing
-/ui
+/ui/
